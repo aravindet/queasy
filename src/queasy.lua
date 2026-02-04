@@ -49,10 +49,12 @@ local function add_to_waiting(waiting_key, id, score, update_run_at)
 end
 
 -- Helper: Upsert job to waiting queue
-local function dispatch(waiting_set_key, waiting_job_key, active_job_key, id, run_at, data,
-                        max_retries, max_stalls, min_backoff, max_backoff,
-                        update_data, update_run_at, update_retry_strategy, reset_counts)
-
+local function dispatch(
+    waiting_set_key, waiting_job_key, active_job_key,
+    id, run_at, data,
+    max_retries, max_stalls, min_backoff, max_backoff,
+    update_data, update_run_at, update_retry_strategy, reset_counts
+)
 	-- If reset_counts is true, reset counters to 0, otherwise initialize them
 	if reset_counts == 'true' then
         redis.call('HSET', waiting_job_key, 'retry_count', '0', 'stall_count', '0')
