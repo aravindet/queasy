@@ -382,7 +382,6 @@ describe('Redis Lua functions', () => {
 			jobData = await redis.hgetall(`${QUEUE_NAME}:waiting_job:${jobId}`);
 			assert.equal(jobData.retry_count, '0');
 			assert.equal(jobData.stall_count, '0');
-			assert.equal(jobData.reset_counts, 'true');
 		});
 	});
 
@@ -441,8 +440,8 @@ describe('Redis Lua functions', () => {
 			await redis.zadd(`${QUEUE_NAME}:waiting`, now - 500, jobId2);
 			await redis.hset(`${QUEUE_NAME}:waiting_job:${jobId2}`, 'id', jobId2);
 
-			// Dequeue (no heartbeat_timeout parameter - it's now a constant)
-			const result = /** @type {string[]} */ (
+			// Dequeue
+			const result = (
 				await redis.fcall(
 					'queasy_dequeue',
 					2,
@@ -455,17 +454,17 @@ describe('Redis Lua functions', () => {
 			);
 
 			assert.equal(result.length, 2);
-			assert.equal(result[0], jobId1);
-			assert.equal(result[1], jobId2);
+			assert.deepEqual(result[0], ['id', jobId1]);
+			assert.deepEqual(result[1], ['id', jobId2]);
 
 			// Verify jobs are in active set
-			const activeMembers = await redis.zrange(`${QUEUE_NAME}:active`, 0, -1);
+            const activeMembers = await redis.zrange(`${QUEUE_NAME}:active`, 0, -1);
 			assert.equal(activeMembers.length, 2);
 			assert.ok(activeMembers.includes(`${jobId1}:${workerId}`));
 			assert.ok(activeMembers.includes(`${jobId2}:${workerId}`));
 
 			// Verify job data moved to active
-			const exists1 = await redis.exists(`${QUEUE_NAME}:active_job:${jobId1}`);
+            const exists1 = await redis.exists(`${QUEUE_NAME}:active_job:${jobId1}`);
 			assert.equal(exists1, 1);
 		});
 
@@ -663,7 +662,8 @@ describe('Redis Lua functions', () => {
 				jobId,
 				workerId,
 				nextRunAt.toString(),
-				QUEUE_NAME
+                QUEUE_NAME,
+				'{"test":"error"}',
 			);
 
 			assert.equal(result, 'OK');
@@ -688,10 +688,26 @@ describe('Redis Lua functions', () => {
 				'id',
 				jobId,
 				'retry_count',
-				'2',
+                '2',
+                'stall_count',
+				'0',
 				'max_retries',
-				'3'
-			);
+                '3',
+                'max_stalls',
+                '3',
+                'min_backoff',
+                '2000',
+                'max_backoff',
+                '300000',
+                'update_data',
+                'true',
+                'update_run_at',
+                'false',
+                'update_retry_strategy',
+                'false',
+                'reset_counts',
+				'false',
+            );
 
 			// Call retry
 			const result = await redis.fcall(
@@ -704,10 +720,11 @@ describe('Redis Lua functions', () => {
 				jobId,
 				workerId,
 				nextRunAt.toString(),
-				QUEUE_NAME
+                QUEUE_NAME,
+                '{"test":"error"}',
 			);
 
-			assert.equal(result, 'PERMANENT_FAILURE');
+            assert.equal(result, 'PERMANENT_FAILURE');
 
 			// Verify job is not in active or waiting
 			const activeExists = await redis.exists(`${QUEUE_NAME}:active_job:${jobId}`);
