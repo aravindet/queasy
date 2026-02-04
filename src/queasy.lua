@@ -37,30 +37,46 @@ local function add_to_waiting(waiting_key, id, score, update_run_at)
 end
 
 -- Helper: Upsert job to waiting queue
-local function dispatch(waiting_set_key, waiting_job_key, active_job_key, id, run_at, job_data)
-	local hset_args = {}
+local function dispatch(waiting_set_key, waiting_job_key, active_job_key, id, run_at, data,
+                        max_retries, max_stalls, min_backoff, max_backoff,
+                        update_data, update_run_at, update_retry_strategy, reset_counts)
+	-- Always set reset_counts
+	redis.call('HSET', waiting_job_key, 'reset_counts', reset_counts)
 
-	for key, value in pairs(job_data) do
-		local update_key = 'update_' .. key
-		if key:match('^update_') or job_data[update_key] == 'true' then
-			table.insert(hset_args, key)
-			table.insert(hset_args, value)
-		else
-			redis.call('HSETNX', waiting_job_key, key, value)
-		end
+	-- If reset_counts is true, reset counters to 0, otherwise initialize them
+	if reset_counts == 'true' then
+        redis.call('HSET', waiting_job_key, 'retry_count', '0', 'stall_count', '0')
+    else
+        redis.call('HSETNX', waiting_job_key, 'retry_count', '0')
+        redis.call('HSETNX', waiting_job_key, 'stall_count', '0')
 	end
 
-	if #hset_args > 0 then
-		redis.call('HSET', waiting_job_key, unpack(hset_args))
+	-- Handle data
+	if update_data == 'true' then
+		redis.call('HSET', waiting_job_key, 'data', data)
+	else
+		redis.call('HSETNX', waiting_job_key, 'data', data)
 	end
 
+	-- Handle retry strategy
+	if update_retry_strategy == 'true' then
+		redis.call('HSET', waiting_job_key,
+			'max_retries', max_retries,
+			'max_stalls', max_stalls,
+			'min_backoff', min_backoff,
+			'max_backoff', max_backoff)
+	else
+		redis.call('HSETNX', waiting_job_key, 'max_retries', max_retries)
+		redis.call('HSETNX', waiting_job_key, 'max_stalls', max_stalls)
+		redis.call('HSETNX', waiting_job_key, 'min_backoff', min_backoff)
+		redis.call('HSETNX', waiting_job_key, 'max_backoff', max_backoff)
+	end
+
+	-- Check if there's an active job with this ID
 	local active_exists = redis.call('EXISTS', active_job_key)
-	local score = run_at
-	if active_exists == 1 then
-		score = -run_at
-	end
+	local score = active_exists == 1 and -run_at or run_at
 
-	local update_run_at = job_data.update_run_at or 'true'
+	-- Add to waiting queue
 	add_to_waiting(waiting_set_key, id, score, update_run_at)
 
 	return 'OK'
@@ -136,7 +152,16 @@ local function fail(active_key, active_job_key, waiting_key, waiting_job_key, id
 			local fail_waiting_job_key = queue_name .. '-fail:waiting_job:' .. fail_job_id
 			local fail_active_job_key = queue_name .. '-fail:active_job:' .. fail_job_id
 
-			dispatch(fail_waiting_key, fail_waiting_job_key, fail_active_job_key, fail_job_id, 0, job_hash)
+			-- Extract fields for dispatch call
+			local data = job_hash.data or ''
+			local max_retries = job_hash.max_retries or '10'
+			local max_stalls = job_hash.max_stalls or '3'
+			local min_backoff = job_hash.min_backoff or '2000'
+			local max_backoff = job_hash.max_backoff or '300000'
+
+			dispatch(fail_waiting_key, fail_waiting_job_key, fail_active_job_key, fail_job_id, 0, data,
+			         max_retries, max_stalls, min_backoff, max_backoff,
+			         'true', 'true', 'false', 'false')
 		end
 	end
 
@@ -150,13 +175,13 @@ local function retry(active_key, active_job_key, waiting_key, waiting_job_key, i
 	local active_member = id .. ':' .. worker_id
 	redis.call('ZREM', active_key, active_member)
 
-	local failure_count = tonumber(redis.call('HGET', active_job_key, 'failure_count') or 0)
-	local max_failures = tonumber(redis.call('HGET', active_job_key, 'max_failures') or 10)
+	local retry_count = tonumber(redis.call('HGET', active_job_key, 'retry_count') or 0)
+	local max_retries = tonumber(redis.call('HGET', active_job_key, 'max_retries') or 10)
 
-	failure_count = failure_count + 1
-	redis.call('HSET', active_job_key, 'failure_count', failure_count)
+	retry_count = retry_count + 1
+	redis.call('HSET', active_job_key, 'retry_count', retry_count)
 
-	if failure_count >= max_failures then
+	if retry_count >= max_retries then
 		return fail(active_key, active_job_key, waiting_key, waiting_job_key, id, worker_id, queue_name)
 	else
 		return do_retry(waiting_key, waiting_job_key, active_job_key, id, next_run_at)
@@ -181,6 +206,70 @@ local function handle_stall(active_key, active_job_key, waiting_key, waiting_job
 	end
 end
 
+-- Dequeue jobs from waiting queue
+local function dequeue(waiting_key, active_key, worker_id, now, limit)
+	local jobs = redis.call('ZRANGEBYSCORE', waiting_key, 0, now, 'LIMIT', 0, limit)
+	local dequeued_jobs = {}
+
+	for _, id in ipairs(jobs) do
+		local removed = redis.call('ZREM', waiting_key, id)
+
+		if removed == 1 then
+			local waiting_job_key = waiting_key:gsub(':waiting$', ':waiting_job:' .. id)
+			local active_job_key = waiting_key:gsub(':waiting$', ':active_job:' .. id)
+
+			local renamed = redis.call('RENAMENX', waiting_job_key, active_job_key)
+
+			if renamed == 1 then
+				local active_member = id .. ':' .. worker_id
+				redis.call('ZADD', active_key, now + HEARTBEAT_TIMEOUT_MS, active_member)
+				table.insert(dequeued_jobs, id)
+			end
+		end
+	end
+
+	return dequeued_jobs
+end
+
+-- Cancel a waiting job
+local function cancel(waiting_key, waiting_job_key, id)
+	local removed = redis.call('ZREM', waiting_key, id)
+	if removed == 1 then
+		redis.call('DEL', waiting_job_key)
+	end
+	return removed
+end
+
+-- Bump heartbeat for active job
+local function bump(active_key, id, worker_id, now)
+	local active_member = id .. ':' .. worker_id
+	local result = redis.call('ZADD', active_key, 'XX', now + HEARTBEAT_TIMEOUT_MS, active_member)
+	return result or 0
+end
+
+-- Sweep stalled jobs
+local function sweep(active_key, now, queue_name, next_run_at)
+	local stalled_members = redis.call('ZRANGEBYSCORE', active_key, 0, now)
+	local processed_jobs = {}
+
+	for _, member in ipairs(stalled_members) do
+		local colon_pos = member:find(':')
+		if colon_pos then
+			local id = member:sub(1, colon_pos - 1)
+			local worker_id = member:sub(colon_pos + 1)
+
+			local active_job_key = queue_name .. ':active_job:' .. id
+			local waiting_key = queue_name .. ':waiting'
+			local waiting_job_key = queue_name .. ':waiting_job:' .. id
+
+			handle_stall(active_key, active_job_key, waiting_key, waiting_job_key, id, worker_id, next_run_at, queue_name)
+			table.insert(processed_jobs, id)
+		end
+	end
+
+	return processed_jobs
+end
+
 -- Register: queasy_dispatch
 redis.register_function{
 	function_name='queasy_dispatch',
@@ -190,9 +279,19 @@ redis.register_function{
 		local active_job_key = keys[3]
 		local id = args[1]
 		local run_at = tonumber(args[2])
-		local job_data = cjson.decode(args[3])
+		local data = args[3]
+		local max_retries = args[4]
+		local max_stalls = args[5]
+		local min_backoff = args[6]
+		local max_backoff = args[7]
+		local update_data = args[8]
+		local update_run_at = args[9]
+		local update_retry_strategy = args[10]
+		local reset_counts = args[11]
 
-		return dispatch(waiting_set_key, waiting_job_key, active_job_key, id, run_at, job_data)
+		return dispatch(waiting_set_key, waiting_job_key, active_job_key, id, run_at, data,
+		                max_retries, max_stalls, min_backoff, max_backoff,
+		                update_data, update_run_at, update_retry_strategy, reset_counts)
 	end,
 	flags={}
 }
@@ -207,27 +306,7 @@ redis.register_function{
 		local now = tonumber(args[2])
 		local limit = tonumber(args[3])
 
-		local jobs = redis.call('ZRANGEBYSCORE', waiting_key, 0, now, 'LIMIT', 0, limit)
-		local dequeued_jobs = {}
-
-		for _, id in ipairs(jobs) do
-			local removed = redis.call('ZREM', waiting_key, id)
-
-			if removed == 1 then
-				local waiting_job_key = waiting_key:gsub(':waiting$', ':waiting_job:' .. id)
-				local active_job_key = waiting_key:gsub(':waiting$', ':active_job:' .. id)
-
-				local renamed = redis.call('RENAMENX', waiting_job_key, active_job_key)
-
-				if renamed == 1 then
-					local active_member = id .. ':' .. worker_id
-					redis.call('ZADD', active_key, now + HEARTBEAT_TIMEOUT_MS, active_member)
-					table.insert(dequeued_jobs, id)
-				end
-			end
-		end
-
-		return dequeued_jobs
+		return dequeue(waiting_key, active_key, worker_id, now, limit)
 	end,
 	flags={}
 }
@@ -240,11 +319,7 @@ redis.register_function{
 		local waiting_job_key = keys[2]
 		local id = args[1]
 
-		local removed = redis.call('ZREM', waiting_key, id)
-		if removed == 1 then
-			redis.call('DEL', waiting_job_key)
-		end
-		return removed
+		return cancel(waiting_key, waiting_job_key, id)
 	end,
 	flags={}
 }
@@ -258,9 +333,7 @@ redis.register_function{
 		local worker_id = args[2]
 		local now = tonumber(args[3])
 
-		local active_member = id .. ':' .. worker_id
-		local result = redis.call('ZADD', active_key, 'XX', now + HEARTBEAT_TIMEOUT_MS, active_member)
-		return result or 0
+		return bump(active_key, id, worker_id, now)
 	end,
 	flags={}
 }
@@ -325,25 +398,7 @@ redis.register_function{
 		local queue_name = args[2]
 		local next_run_at = tonumber(args[3])
 
-		local stalled_members = redis.call('ZRANGEBYSCORE', active_key, 0, now)
-		local processed_jobs = {}
-
-		for _, member in ipairs(stalled_members) do
-			local colon_pos = member:find(':')
-			if colon_pos then
-				local id = member:sub(1, colon_pos - 1)
-				local worker_id = member:sub(colon_pos + 1)
-
-				local active_job_key = queue_name .. ':active_job:' .. id
-				local waiting_key = queue_name .. ':waiting'
-				local waiting_job_key = queue_name .. ':waiting_job:' .. id
-
-				handle_stall(active_key, active_job_key, waiting_key, waiting_job_key, id, worker_id, next_run_at, queue_name)
-				table.insert(processed_jobs, id)
-			end
-		end
-
-		return processed_jobs
+		return sweep(active_key, now, queue_name, next_run_at)
 	end,
 	flags={}
 }

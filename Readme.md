@@ -24,15 +24,15 @@ This library is NOT resilient to Redis failures. If the Redis instance crashes, 
 Returns a queue object for interacting with this named queue at the defined Redis server.
 - name is a string queue name. Redis data structures related to a queue will be placed on the same node in a Redis cluster.
 - redisConnection is an ioredis connection object.
-- defaultJobOptions are defaults for the options argument to queue.notify() below, except for `runAt`
+- defaultJobOptions are defaults for the options argument to queue.dispatch() below, except for `runAt`
 - failureJobOptions are default options for jobs used to invoke failure handlers, except for `runAt`.
 
-### `queue.notify(data, options)`
+### `queue.dispatch(data, options)`
 
 Adds a job to the queue. `data` may be any JSON value, which will be passed unchanged to the workers. Options may include:
 - `id`: alphanumeric string; if not provided, a unique random string is generated
 - `runAt`: number; wall clock timestamp before which this job must not be run; default: 0
-- `maxFailures`: number; default: 10
+- `maxRetries`: number; default: 10
 - `maxStalls`: number; default: 3
 - `minBackoff`: number; in milliseconds; default: 2000
 - `maxBackoff`: number; default: 300_000
@@ -40,7 +40,7 @@ Adds a job to the queue. `data` may be any JSON value, which will be passed unch
 The following options take effect if an `id` is provided, and it matches that of a job already in the queue.
 - `updateData`: boolean; whether to replace the data of any waiting job with the same ID; default: true
 - `updateRunAt`: boolean | 'ifLater' | 'ifEarlier'; default: true
-- `updateMaxFailures`, `updateMaxStalls`, `updateMinBackoff`, `updateMaxBackoff`: boolean
+- `updateRetryStrategy`: boolean; whether to replace `maxRetries`, `maxStalls`, `minBackoff` and `maxBackoff`
 - `resetCounts`: boolean; Whether to reset the internal failure and stall counts to 0; default: same as updateData
 
 Returns a promise that resolves to the job ID when the job has been added to Redis.
@@ -63,12 +63,12 @@ The handler module must have a named export `handle`, a function that is called 
 ### `handle`
 
 It receives two arguments:
-- `data`, the JSON value passed to notify
+- `data`, the JSON value passed to dispatch
 - `job`, an object contains all the job options as well as `failureCount` and `stallCount`
 
 This function may throw (or return a Promise that rejects) to indicate job failure. If the thrown error is an
-instance of `PermanentError`, or if `maxFailures` has been reached, the job is not retried. Otherwise, the job
-is queued to be retried with `maxFailures` incremented.
+instance of `PermanentError`, or if `maxRetries` has been reached, the job is not retried. Otherwise, the job
+is queued to be retried with `maxRetries` incremented.
 
 If the thrown error has a property `retryAt`, the job’s `runAt` is set to this value; otherwise, it’s set using
 the exponential backoff algorithm.
@@ -78,7 +78,7 @@ If it returns any value apart from a Promise that rejects, the job is considered
 ### `handleFailure`
 
 This function receives three arguments:
-- `data`, the JSON value passed to notify
+- `data`, the JSON value passed to dispatch
 - `job`
 - `error`, a JSON object with a copy of the enumerable properties of the error thrown by the final call to handle,
   or an instance of `StallError` if the final call to handle didn’t return or throw.
@@ -91,7 +91,7 @@ is expected that failure jobs are retried for a long time (e.g. days).
 ### Data structures
 
 We use two sorted sets, `{queue}:waiting` and `{queue}:active`, and two hashes `{queue}:waiting_job:{id}` and 
-`{queue}:active_job:{id}`. The hash has members `id`, `data`, `maxFailures`, `failureCount`, `lockedBy` etc.
+`{queue}:active_job:{id}`. The hash has members `id`, `data`, `maxRetries`, `failureCount`, `lockedBy` etc.
 
 The members of the waiting set is the job `id`, while that of the active set is `{id}:{worker_id}` with the ID of the
 worker that has dequeued this job.
@@ -165,8 +165,8 @@ In JS:
 
 Lua "onRetry" function:
 - ZREM the completed item from the active queue.
-- Use HGET from active hash to get failureCount and maxFailures
-- If failureCount = maxFailures, call onFailure
+- Use HGET from active hash to get failureCount and maxRetries
+- If failureCount = maxRetries, call onFailure
 - Otherwise, HINCRBY failureCount and call doRetry
 
 Lua "doRetry" function:

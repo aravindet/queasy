@@ -11,7 +11,7 @@ const __dirname = dirname(__filename);
 describe('Redis Lua functions', () => {
 	/** @type {Redis} */
 	let redis;
-	const QUEUE_NAME = 'test-queue';
+	const QUEUE_NAME = '{test-queue}'; // Must be enclosed in {...} to ensure all keys go into the same hash slot.
 
 	before(async () => {
 		redis = new Redis({
@@ -54,16 +54,6 @@ describe('Redis Lua functions', () => {
 		it('should add a new job to waiting queue', async () => {
 			const jobId = 'job1';
 			const runAt = Date.now();
-			const jobData = {
-				id: jobId,
-				data: JSON.stringify({ task: 'test' }),
-				max_failures: '10',
-				max_stalls: '3',
-				failure_count: '0',
-				stall_count: '0',
-				update_data: 'true',
-				update_run_at: 'true',
-			};
 
 			const result = await redis.fcall(
 				'queasy_dispatch',
@@ -73,7 +63,15 @@ describe('Redis Lua functions', () => {
 				`${QUEUE_NAME}:active_job:${jobId}`,
 				jobId,
 				runAt.toString(),
-				JSON.stringify(jobData)
+				JSON.stringify({ task: 'test' }),
+				'10', // max_retries
+				'3', // max_stalls
+				'2000', // min_backoff
+				'300000', // max_backoff
+				'true', // update_data
+				'true', // update_run_at
+				'false', // update_retry_strategy
+				'false' // reset_counts
 			);
 
 			assert.equal(result, 'OK');
@@ -84,7 +82,11 @@ describe('Redis Lua functions', () => {
 
 			// Verify job data is stored
 			const storedData = await redis.hgetall(`${QUEUE_NAME}:waiting_job:${jobId}`);
-			assert.equal(storedData.id, jobId);
+			assert.equal(storedData.data, JSON.stringify({ task: 'test' }));
+			assert.equal(storedData.max_retries, '10');
+			assert.equal(storedData.max_stalls, '3');
+			assert.equal(storedData.retry_count, '0');
+			assert.equal(storedData.stall_count, '0');
 		});
 
 		it('should block job if active job with same ID exists', async () => {
@@ -94,14 +96,6 @@ describe('Redis Lua functions', () => {
 			// Create an active job first
 			await redis.hset(`${QUEUE_NAME}:active_job:${jobId}`, 'id', jobId);
 
-			const jobData = {
-				id: jobId,
-				data: JSON.stringify({ task: 'test' }),
-				max_failures: '10',
-				update_data: 'true',
-				update_run_at: 'true',
-			};
-
 			await redis.fcall(
 				'queasy_dispatch',
 				3,
@@ -110,7 +104,15 @@ describe('Redis Lua functions', () => {
 				`${QUEUE_NAME}:active_job:${jobId}`,
 				jobId,
 				runAt.toString(),
-				JSON.stringify(jobData)
+				JSON.stringify({ task: 'test' }),
+				'10',
+				'3',
+				'2000',
+				'300000',
+				'true',
+				'true',
+				'false',
+				'false'
 			);
 
 			// Verify job has negative score (blocked)
@@ -127,13 +129,6 @@ describe('Redis Lua functions', () => {
 			const runAt2 = Date.now() + 5000;
 
 			// Add job first time
-			const jobData1 = {
-				id: jobId,
-				data: JSON.stringify({ task: 'test1' }),
-				update_data: 'true',
-				update_run_at: 'true',
-			};
-
 			await redis.fcall(
 				'queasy_dispatch',
 				3,
@@ -142,17 +137,18 @@ describe('Redis Lua functions', () => {
 				`${QUEUE_NAME}:active_job:${jobId}`,
 				jobId,
 				runAt1.toString(),
-				JSON.stringify(jobData1)
+				JSON.stringify({ task: 'test1' }),
+				'10',
+				'3',
+				'2000',
+				'300000',
+				'true',
+				'true',
+				'false',
+				'false'
 			);
 
 			// Try to update with update_run_at=false
-			const jobData2 = {
-				id: jobId,
-				data: JSON.stringify({ task: 'test2' }),
-				update_data: 'true',
-				update_run_at: 'false',
-			};
-
 			await redis.fcall(
 				'queasy_dispatch',
 				3,
@@ -161,12 +157,232 @@ describe('Redis Lua functions', () => {
 				`${QUEUE_NAME}:active_job:${jobId}`,
 				jobId,
 				runAt2.toString(),
-				JSON.stringify(jobData2)
+				JSON.stringify({ task: 'test2' }),
+				'10',
+				'3',
+				'2000',
+				'300000',
+				'true',
+				'false',
+				'false',
+				'false'
 			);
 
 			// Score should still be runAt1
 			const score = await redis.zscore(`${QUEUE_NAME}:waiting`, jobId);
 			assert.equal(Number(score), runAt1);
+		});
+
+		it('should respect update_data=false flag', async () => {
+			const jobId = 'job4';
+			const runAt = Date.now();
+
+			// Add job first time
+			await redis.fcall(
+				'queasy_dispatch',
+				3,
+				`${QUEUE_NAME}:waiting`,
+				`${QUEUE_NAME}:waiting_job:${jobId}`,
+				`${QUEUE_NAME}:active_job:${jobId}`,
+				jobId,
+				runAt.toString(),
+				JSON.stringify({ task: 'original' }),
+				'10',
+				'3',
+				'2000',
+				'300000',
+				'true',
+				'true',
+				'false',
+				'false'
+			);
+
+			// Try to update with update_data=false
+			await redis.fcall(
+				'queasy_dispatch',
+				3,
+				`${QUEUE_NAME}:waiting`,
+				`${QUEUE_NAME}:waiting_job:${jobId}`,
+				`${QUEUE_NAME}:active_job:${jobId}`,
+				jobId,
+				runAt.toString(),
+				JSON.stringify({ task: 'updated' }),
+				'10',
+				'3',
+				'2000',
+				'300000',
+				'false',
+				'true',
+				'false',
+				'false'
+			);
+
+			// Data should still be original
+			const data = await redis.hget(`${QUEUE_NAME}:waiting_job:${jobId}`, 'data');
+			assert.equal(data, JSON.stringify({ task: 'original' }));
+		});
+
+		it('should respect update_retry_strategy=true flag', async () => {
+			const jobId = 'job5';
+			const runAt = Date.now();
+
+			// Add job first time
+			await redis.fcall(
+				'queasy_dispatch',
+				3,
+				`${QUEUE_NAME}:waiting`,
+				`${QUEUE_NAME}:waiting_job:${jobId}`,
+				`${QUEUE_NAME}:active_job:${jobId}`,
+				jobId,
+				runAt.toString(),
+				JSON.stringify({ task: 'test' }),
+				'5',
+				'2',
+				'1000',
+				'100000',
+				'true',
+				'true',
+				'false',
+				'false'
+			);
+
+			// Update with new retry strategy
+			await redis.fcall(
+				'queasy_dispatch',
+				3,
+				`${QUEUE_NAME}:waiting`,
+				`${QUEUE_NAME}:waiting_job:${jobId}`,
+				`${QUEUE_NAME}:active_job:${jobId}`,
+				jobId,
+				runAt.toString(),
+				JSON.stringify({ task: 'test' }),
+				'15',
+				'5',
+				'3000',
+				'500000',
+				'true',
+				'true',
+				'true',
+				'false'
+			);
+
+			// Verify strategy was updated
+			const jobData = await redis.hgetall(`${QUEUE_NAME}:waiting_job:${jobId}`);
+			assert.equal(jobData.max_retries, '15');
+			assert.equal(jobData.max_stalls, '5');
+			assert.equal(jobData.min_backoff, '3000');
+			assert.equal(jobData.max_backoff, '500000');
+		});
+
+		it('should respect update_retry_strategy=false flag', async () => {
+			const jobId = 'job6';
+			const runAt = Date.now();
+
+			// Add job first time
+			await redis.fcall(
+				'queasy_dispatch',
+				3,
+				`${QUEUE_NAME}:waiting`,
+				`${QUEUE_NAME}:waiting_job:${jobId}`,
+				`${QUEUE_NAME}:active_job:${jobId}`,
+				jobId,
+				runAt.toString(),
+				JSON.stringify({ task: 'test' }),
+				'5',
+				'2',
+				'1000',
+				'100000',
+				'true',
+				'true',
+				'false',
+				'false'
+			);
+
+			// Try to update with update_retry_strategy=false
+			await redis.fcall(
+				'queasy_dispatch',
+				3,
+				`${QUEUE_NAME}:waiting`,
+				`${QUEUE_NAME}:waiting_job:${jobId}`,
+				`${QUEUE_NAME}:active_job:${jobId}`,
+				jobId,
+				runAt.toString(),
+				JSON.stringify({ task: 'test' }),
+				'15',
+				'5',
+				'3000',
+				'500000',
+				'true',
+				'true',
+				'false',
+				'false'
+			);
+
+			// Verify strategy was NOT updated
+			const jobData = await redis.hgetall(`${QUEUE_NAME}:waiting_job:${jobId}`);
+			assert.equal(jobData.max_retries, '5');
+			assert.equal(jobData.max_stalls, '2');
+			assert.equal(jobData.min_backoff, '1000');
+			assert.equal(jobData.max_backoff, '100000');
+		});
+
+		it('should reset counts when reset_counts=true', async () => {
+			const jobId = 'job7';
+			const runAt = Date.now();
+
+			// Add job and manually set counts
+			await redis.fcall(
+				'queasy_dispatch',
+				3,
+				`${QUEUE_NAME}:waiting`,
+				`${QUEUE_NAME}:waiting_job:${jobId}`,
+				`${QUEUE_NAME}:active_job:${jobId}`,
+				jobId,
+				runAt.toString(),
+				JSON.stringify({ task: 'test' }),
+				'10',
+				'3',
+				'2000',
+				'300000',
+				'true',
+				'true',
+				'false',
+				'false'
+			);
+
+			// Manually increment counts
+			await redis.hset(`${QUEUE_NAME}:waiting_job:${jobId}`, 'retry_count', '5', 'stall_count', '2');
+
+			// Verify counts are set
+			let jobData = await redis.hgetall(`${QUEUE_NAME}:waiting_job:${jobId}`);
+			assert.equal(jobData.retry_count, '5');
+			assert.equal(jobData.stall_count, '2');
+
+			// Update with reset_counts=true
+			await redis.fcall(
+				'queasy_dispatch',
+				3,
+				`${QUEUE_NAME}:waiting`,
+				`${QUEUE_NAME}:waiting_job:${jobId}`,
+				`${QUEUE_NAME}:active_job:${jobId}`,
+				jobId,
+				runAt.toString(),
+				JSON.stringify({ task: 'test' }),
+				'10',
+				'3',
+				'2000',
+				'300000',
+				'true',
+				'true',
+				'false',
+				'true'
+			);
+
+			// Verify counts are reset
+			jobData = await redis.hgetall(`${QUEUE_NAME}:waiting_job:${jobId}`);
+			assert.equal(jobData.retry_count, '0');
+			assert.equal(jobData.stall_count, '0');
+			assert.equal(jobData.reset_counts, 'true');
 		});
 	});
 
@@ -419,7 +635,7 @@ describe('Redis Lua functions', () => {
 	});
 
 	describe('retry', () => {
-		it('should increment failure count and retry', async () => {
+		it('should increment retry count and retry', async () => {
 			const jobId = 'job-onfail';
 			const workerId = 'worker1';
 			const nextRunAt = Date.now() + 5000;
@@ -430,9 +646,9 @@ describe('Redis Lua functions', () => {
 				`${QUEUE_NAME}:active_job:${jobId}`,
 				'id',
 				jobId,
-				'failure_count',
+				'retry_count',
 				'0',
-				'max_failures',
+				'max_retries',
 				'3'
 			);
 
@@ -452,12 +668,12 @@ describe('Redis Lua functions', () => {
 
 			assert.equal(result, 'OK');
 
-			// Verify failure count incremented
-			const failureCount = await redis.hget(`${QUEUE_NAME}:waiting_job:${jobId}`, 'failure_count');
-			assert.equal(failureCount, '1');
+			// Verify retry count incremented
+			const retryCount = await redis.hget(`${QUEUE_NAME}:waiting_job:${jobId}`, 'retry_count');
+			assert.equal(retryCount, '1');
 		});
 
-		it('should trigger permanent failure when max_failures reached', async () => {
+		it('should trigger permanent failure when max_retries reached', async () => {
 			const jobId = 'job-maxfail';
 			const workerId = 'worker1';
 			const nextRunAt = Date.now() + 5000;
@@ -465,15 +681,15 @@ describe('Redis Lua functions', () => {
 			// Setup failure queue (simulate handlers registered)
 			await redis.zadd(`${QUEUE_NAME}-fail:waiting`, 0, 'dummy');
 
-			// Setup active job at max failures
+			// Setup active job at max retries
 			await redis.zadd(`${QUEUE_NAME}:active`, Date.now(), `${jobId}:${workerId}`);
 			await redis.hset(
 				`${QUEUE_NAME}:active_job:${jobId}`,
 				'id',
 				jobId,
-				'failure_count',
+				'retry_count',
 				'2',
-				'max_failures',
+				'max_retries',
 				'3'
 			);
 
