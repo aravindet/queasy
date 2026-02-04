@@ -1,0 +1,29 @@
+{
+	"name": "queasy",
+	"version": "0.1.0",
+	"description": "A simple Redis-backed queue library for Node.js",
+	"main": "index.js",
+	"type": "module",
+	"scripts": {
+		"test": "node --test",
+		"test:watch": "node --test --watch",
+		"lint": "biome check .",
+		"lint:fix": "biome check --write .",
+		"format": "biome format --write .",
+		"typecheck": "tsc --noEmit",
+		"docker:up": "docker compose up -d",
+		"docker:down": "docker compose down",
+		"docker:logs": "docker compose logs -f"
+	},
+	"keywords": ["queue", "redis", "job", "task", "worker"],
+	"author": "",
+	"license": "ISC",
+	"dependencies": {
+		"ioredis": "^5.4.2"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^1.9.4",
+		"@types/node": "^22.10.5",
+		"typescript": "^5.7.3"
+	}
+}
