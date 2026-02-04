@@ -2,10 +2,10 @@
 	"name": "queasy",
 	"version": "0.1.0",
 	"description": "A simple Redis-backed queue library for Node.js",
-	"main": "index.js",
+	"main": "src/index.js",
 	"type": "module",
 	"scripts": {
-		"test": "node --test",
+		"test": "node --test test/**/*.test.js",
 		"test:watch": "node --test --watch",
 		"lint": "biome check .",
 		"lint:fix": "biome check --write .",
