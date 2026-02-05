@@ -3,22 +3,25 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { after, afterEach, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import Redis from 'ioredis';
+import { createClient } from 'redis';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 describe('Redis Lua functions', () => {
-	/** @type {Redis} */
+	/** @type {import('redis').RedisClientType} */
 	let redis;
 	const QUEUE_NAME = '{test-queue}'; // Must be enclosed in {...} to ensure all keys go into the same hash slot.
 
 	before(async () => {
-		redis = new Redis({
-			host: 'localhost',
-			port: 6379,
+		redis = createClient({
+			socket: {
+				host: 'localhost',
+				port: 6379,
+			},
 		});
 
+		await redis.connect();
 		await redis.ping();
 
 		// Load Lua script
@@ -26,7 +29,7 @@ describe('Redis Lua functions', () => {
 
 		// Load the library into Redis
 		try {
-			await redis.call('FUNCTION', 'LOAD', 'REPLACE', luaScript);
+			await redis.sendCommand(['FUNCTION', 'LOAD', 'REPLACE', luaScript]);
 		} catch (error) {
 			console.error('Failed to load Lua functions:', error);
 			throw error;
@@ -37,16 +40,16 @@ describe('Redis Lua functions', () => {
 		// Clean up all test keys
 		const keys = await redis.keys(`${QUEUE_NAME}*`);
 		if (keys.length > 0) {
-			await redis.del(...keys);
+			await redis.del(keys);
 		}
-		await redis.quit();
+		await redis.disconnect();
 	});
 
 	afterEach(async () => {
 		// Clean up between tests
 		const keys = await redis.keys(`${QUEUE_NAME}*`);
 		if (keys.length > 0) {
-			await redis.del(...keys);
+			await redis.del(keys);
 		}
 	});
 
@@ -55,33 +58,35 @@ describe('Redis Lua functions', () => {
 			const jobId = 'job1';
 			const runAt = Date.now();
 
-			const result = await redis.fcall(
-				'queasy_dispatch',
-				3,
-				`${QUEUE_NAME}:waiting`,
-				`${QUEUE_NAME}:waiting_job:${jobId}`,
-				`${QUEUE_NAME}:active_job:${jobId}`,
-				jobId,
-				runAt.toString(),
-				JSON.stringify({ task: 'test' }),
-				'10', // max_retries
-				'3', // max_stalls
-				'2000', // min_backoff
-				'300000', // max_backoff
-				'true', // update_data
-				'true', // update_run_at
-				'false', // update_retry_strategy
-				'false' // reset_counts
-			);
+			const result = await redis.fCall('queasy_dispatch', {
+				keys: [
+					`${QUEUE_NAME}:waiting`,
+					`${QUEUE_NAME}:waiting_job:${jobId}`,
+					`${QUEUE_NAME}:active_job:${jobId}`,
+				],
+				arguments: [
+					jobId,
+					runAt.toString(),
+					JSON.stringify({ task: 'test' }),
+					'10', // max_retries
+					'3', // max_stalls
+					'2000', // min_backoff
+					'300000', // max_backoff
+					'true', // update_data
+					'true', // update_run_at
+					'false', // update_retry_strategy
+					'false', // reset_counts
+				],
+			});
 
 			assert.equal(result, 'OK');
 
 			// Verify job is in waiting queue
-			const score = await redis.zscore(`${QUEUE_NAME}:waiting`, jobId);
+			const score = await redis.zScore(`${QUEUE_NAME}:waiting`, jobId);
 			assert.equal(Number(score), runAt);
 
 			// Verify job data is stored
-			const storedData = await redis.hgetall(`${QUEUE_NAME}:waiting_job:${jobId}`);
+			const storedData = await redis.hGetAll(`${QUEUE_NAME}:waiting_job:${jobId}`);
 			assert.equal(storedData.data, JSON.stringify({ task: 'test' }));
 			assert.equal(storedData.max_retries, '10');
 			assert.equal(storedData.max_stalls, '3');
@@ -94,29 +99,31 @@ describe('Redis Lua functions', () => {
 			const runAt = Date.now() + 1000;
 
 			// Create an active job first
-			await redis.hset(`${QUEUE_NAME}:active_job:${jobId}`, 'id', jobId);
+			await redis.hSet(`${QUEUE_NAME}:active_job:${jobId}`, 'id', jobId);
 
-			await redis.fcall(
-				'queasy_dispatch',
-				3,
-				`${QUEUE_NAME}:waiting`,
-				`${QUEUE_NAME}:waiting_job:${jobId}`,
-				`${QUEUE_NAME}:active_job:${jobId}`,
-				jobId,
-				runAt.toString(),
-				JSON.stringify({ task: 'test' }),
-				'10',
-				'3',
-				'2000',
-				'300000',
-				'true',
-				'true',
-				'false',
-				'false'
-			);
+			await redis.fCall('queasy_dispatch', {
+				keys: [
+					`${QUEUE_NAME}:waiting`,
+					`${QUEUE_NAME}:waiting_job:${jobId}`,
+					`${QUEUE_NAME}:active_job:${jobId}`,
+				],
+				arguments: [
+					jobId,
+					runAt.toString(),
+					JSON.stringify({ task: 'test' }),
+					'10',
+					'3',
+					'2000',
+					'300000',
+					'true',
+					'true',
+					'false',
+					'false',
+				],
+			});
 
 			// Verify job has negative score (blocked)
-			const score = await redis.zscore(`${QUEUE_NAME}:waiting`, jobId);
+			const score = await redis.zScore(`${QUEUE_NAME}:waiting`, jobId);
 			assert.equal(Number(score), -runAt);
 
 			// Cleanup
@@ -129,47 +136,51 @@ describe('Redis Lua functions', () => {
 			const runAt2 = Date.now() + 5000;
 
 			// Add job first time
-			await redis.fcall(
-				'queasy_dispatch',
-				3,
-				`${QUEUE_NAME}:waiting`,
-				`${QUEUE_NAME}:waiting_job:${jobId}`,
-				`${QUEUE_NAME}:active_job:${jobId}`,
-				jobId,
-				runAt1.toString(),
-				JSON.stringify({ task: 'test1' }),
-				'10',
-				'3',
-				'2000',
-				'300000',
-				'true',
-				'true',
-				'false',
-				'false'
-			);
+			await redis.fCall('queasy_dispatch', {
+				keys: [
+					`${QUEUE_NAME}:waiting`,
+					`${QUEUE_NAME}:waiting_job:${jobId}`,
+					`${QUEUE_NAME}:active_job:${jobId}`,
+				],
+				arguments: [
+					jobId,
+					runAt1.toString(),
+					JSON.stringify({ task: 'test1' }),
+					'10',
+					'3',
+					'2000',
+					'300000',
+					'true',
+					'true',
+					'false',
+					'false',
+				],
+			});
 
 			// Try to update with update_run_at=false
-			await redis.fcall(
-				'queasy_dispatch',
-				3,
-				`${QUEUE_NAME}:waiting`,
-				`${QUEUE_NAME}:waiting_job:${jobId}`,
-				`${QUEUE_NAME}:active_job:${jobId}`,
-				jobId,
-				runAt2.toString(),
-				JSON.stringify({ task: 'test2' }),
-				'10',
-				'3',
-				'2000',
-				'300000',
-				'true',
-				'false',
-				'false',
-				'false'
-			);
+			await redis.fCall('queasy_dispatch', {
+				keys: [
+					`${QUEUE_NAME}:waiting`,
+					`${QUEUE_NAME}:waiting_job:${jobId}`,
+					`${QUEUE_NAME}:active_job:${jobId}`,
+				],
+				arguments: [
+					jobId,
+					runAt2.toString(),
+					JSON.stringify({ task: 'test2' }),
+					'10',
+					'3',
+					'2000',
+					'300000',
+					'true',
+					'false',
+					'false',
+					'false',
+				],
+			});
 
 			// Score should still be runAt1
-			const score = await redis.zscore(`${QUEUE_NAME}:waiting`, jobId);
+			const score = await redis.zScore(`${QUEUE_NAME}:waiting`, jobId);
 			assert.equal(Number(score), runAt1);
 		});
 
@@ -178,47 +189,51 @@ describe('Redis Lua functions', () => {
 			const runAt = Date.now();
 
 			// Add job first time
-			await redis.fcall(
-				'queasy_dispatch',
-				3,
-				`${QUEUE_NAME}:waiting`,
-				`${QUEUE_NAME}:waiting_job:${jobId}`,
-				`${QUEUE_NAME}:active_job:${jobId}`,
-				jobId,
-				runAt.toString(),
-				JSON.stringify({ task: 'original' }),
-				'10',
-				'3',
-				'2000',
-				'300000',
-				'true',
-				'true',
-				'false',
-				'false'
-			);
+			await redis.fCall('queasy_dispatch', {
+				keys: [
+					`${QUEUE_NAME}:waiting`,
+					`${QUEUE_NAME}:waiting_job:${jobId}`,
+					`${QUEUE_NAME}:active_job:${jobId}`,
+				],
+				arguments: [
+					jobId,
+					runAt.toString(),
+					JSON.stringify({ task: 'original' }),
+					'10',
+					'3',
+					'2000',
+					'300000',
+					'true',
+					'true',
+					'false',
+					'false',
+				],
+			});
 
 			// Try to update with update_data=false
-			await redis.fcall(
-				'queasy_dispatch',
-				3,
-				`${QUEUE_NAME}:waiting`,
-				`${QUEUE_NAME}:waiting_job:${jobId}`,
-				`${QUEUE_NAME}:active_job:${jobId}`,
-				jobId,
-				runAt.toString(),
-				JSON.stringify({ task: 'updated' }),
-				'10',
-				'3',
-				'2000',
-				'300000',
-				'false',
-				'true',
-				'false',
-				'false'
-			);
+			await redis.fCall('queasy_dispatch', {
+				keys: [
+					`${QUEUE_NAME}:waiting`,
+					`${QUEUE_NAME}:waiting_job:${jobId}`,
+					`${QUEUE_NAME}:active_job:${jobId}`,
+				],
+				arguments: [
+					jobId,
+					runAt.toString(),
+					JSON.stringify({ task: 'updated' }),
+					'10',
+					'3',
+					'2000',
+					'300000',
+					'false',
+					'true',
+					'false',
+					'false',
+				],
+			});
 
 			// Data should still be original
-			const data = await redis.hget(`${QUEUE_NAME}:waiting_job:${jobId}`, 'data');
+			const data = await redis.hGet(`${QUEUE_NAME}:waiting_job:${jobId}`, 'data');
 			assert.equal(data, JSON.stringify({ task: 'original' }));
 		});
 
@@ -227,47 +242,51 @@ describe('Redis Lua functions', () => {
 			const runAt = Date.now();
 
 			// Add job first time
-			await redis.fcall(
-				'queasy_dispatch',
-				3,
-				`${QUEUE_NAME}:waiting`,
-				`${QUEUE_NAME}:waiting_job:${jobId}`,
-				`${QUEUE_NAME}:active_job:${jobId}`,
-				jobId,
-				runAt.toString(),
-				JSON.stringify({ task: 'test' }),
-				'5',
-				'2',
-				'1000',
-				'100000',
-				'true',
-				'true',
-				'false',
-				'false'
-			);
+			await redis.fCall('queasy_dispatch', {
+				keys: [
+					`${QUEUE_NAME}:waiting`,
+					`${QUEUE_NAME}:waiting_job:${jobId}`,
+					`${QUEUE_NAME}:active_job:${jobId}`,
+				],
+				arguments: [
+					jobId,
+					runAt.toString(),
+					JSON.stringify({ task: 'test' }),
+					'5',
+					'2',
+					'1000',
+					'100000',
+					'true',
+					'true',
+					'false',
+					'false',
+				],
+			});
 
 			// Update with new retry strategy
-			await redis.fcall(
-				'queasy_dispatch',
-				3,
-				`${QUEUE_NAME}:waiting`,
-				`${QUEUE_NAME}:waiting_job:${jobId}`,
-				`${QUEUE_NAME}:active_job:${jobId}`,
-				jobId,
-				runAt.toString(),
-				JSON.stringify({ task: 'test' }),
-				'15',
-				'5',
-				'3000',
-				'500000',
-				'true',
-				'true',
-				'true',
-				'false'
-			);
+			await redis.fCall('queasy_dispatch', {
+				keys: [
+					`${QUEUE_NAME}:waiting`,
+					`${QUEUE_NAME}:waiting_job:${jobId}`,
+					`${QUEUE_NAME}:active_job:${jobId}`,
+				],
+				arguments: [
+					jobId,
+					runAt.toString(),
+					JSON.stringify({ task: 'test' }),
+					'15',
+					'5',
+					'3000',
+					'500000',
+					'true',
+					'true',
+					'true',
+					'false',
+				],
+			});
 
 			// Verify strategy was updated
-			const jobData = await redis.hgetall(`${QUEUE_NAME}:waiting_job:${jobId}`);
+			const jobData = await redis.hGetAll(`${QUEUE_NAME}:waiting_job:${jobId}`);
 			assert.equal(jobData.max_retries, '15');
 			assert.equal(jobData.max_stalls, '5');
 			assert.equal(jobData.min_backoff, '3000');
@@ -279,47 +298,51 @@ describe('Redis Lua functions', () => {
 			const runAt = Date.now();
 
 			// Add job first time
-			await redis.fcall(
-				'queasy_dispatch',
-				3,
-				`${QUEUE_NAME}:waiting`,
-				`${QUEUE_NAME}:waiting_job:${jobId}`,
-				`${QUEUE_NAME}:active_job:${jobId}`,
-				jobId,
-				runAt.toString(),
-				JSON.stringify({ task: 'test' }),
-				'5',
-				'2',
-				'1000',
-				'100000',
-				'true',
-				'true',
-				'false',
-				'false'
-			);
+			await redis.fCall('queasy_dispatch', {
+				keys: [
+					`${QUEUE_NAME}:waiting`,
+					`${QUEUE_NAME}:waiting_job:${jobId}`,
+					`${QUEUE_NAME}:active_job:${jobId}`,
+				],
+				arguments: [
+					jobId,
+					runAt.toString(),
+					JSON.stringify({ task: 'test' }),
+					'5',
+					'2',
+					'1000',
+					'100000',
+					'true',
+					'true',
+					'false',
+					'false',
+				],
+			});
 
 			// Try to update with update_retry_strategy=false
-			await redis.fcall(
-				'queasy_dispatch',
-				3,
-				`${QUEUE_NAME}:waiting`,
-				`${QUEUE_NAME}:waiting_job:${jobId}`,
-				`${QUEUE_NAME}:active_job:${jobId}`,
-				jobId,
-				runAt.toString(),
-				JSON.stringify({ task: 'test' }),
-				'15',
-				'5',
-				'3000',
-				'500000',
-				'true',
-				'true',
-				'false',
-				'false'
-			);
+			await redis.fCall('queasy_dispatch', {
+				keys: [
+					`${QUEUE_NAME}:waiting`,
+					`${QUEUE_NAME}:waiting_job:${jobId}`,
+					`${QUEUE_NAME}:active_job:${jobId}`,
+				],
+				arguments: [
+					jobId,
+					runAt.toString(),
+					JSON.stringify({ task: 'test' }),
+					'15',
+					'5',
+					'3000',
+					'500000',
+					'true',
+					'true',
+					'false',
+					'false',
+				],
+			});
 
 			// Verify strategy was NOT updated
-			const jobData = await redis.hgetall(`${QUEUE_NAME}:waiting_job:${jobId}`);
+			const jobData = await redis.hGetAll(`${QUEUE_NAME}:waiting_job:${jobId}`);
 			assert.equal(jobData.max_retries, '5');
 			assert.equal(jobData.max_stalls, '2');
 			assert.equal(jobData.min_backoff, '1000');
@@ -331,55 +354,63 @@ describe('Redis Lua functions', () => {
 			const runAt = Date.now();
 
 			// Add job and manually set counts
-			await redis.fcall(
-				'queasy_dispatch',
-				3,
-				`${QUEUE_NAME}:waiting`,
-				`${QUEUE_NAME}:waiting_job:${jobId}`,
-				`${QUEUE_NAME}:active_job:${jobId}`,
-				jobId,
-				runAt.toString(),
-				JSON.stringify({ task: 'test' }),
-				'10',
-				'3',
-				'2000',
-				'300000',
-				'true',
-				'true',
-				'false',
-				'false'
-			);
+			await redis.fCall('queasy_dispatch', {
+				keys: [
+					`${QUEUE_NAME}:waiting`,
+					`${QUEUE_NAME}:waiting_job:${jobId}`,
+					`${QUEUE_NAME}:active_job:${jobId}`,
+				],
+				arguments: [
+					jobId,
+					runAt.toString(),
+					JSON.stringify({ task: 'test' }),
+					'10',
+					'3',
+					'2000',
+					'300000',
+					'true',
+					'true',
+					'false',
+					'false',
+				],
+			});
 
 			// Manually increment counts
-			await redis.hset(`${QUEUE_NAME}:waiting_job:${jobId}`, 'retry_count', '5', 'stall_count', '2');
+			await redis.hSet(`${QUEUE_NAME}:waiting_job:${jobId}`, {
+				retry_count: '5',
+				stall_count: '2',
+			});
 
 			// Verify counts are set
-			let jobData = await redis.hgetall(`${QUEUE_NAME}:waiting_job:${jobId}`);
+			let jobData = await redis.hGetAll(`${QUEUE_NAME}:waiting_job:${jobId}`);
+			console.log('JOBDATA', jobData);
 			assert.equal(jobData.retry_count, '5');
 			assert.equal(jobData.stall_count, '2');
 
 			// Update with reset_counts=true
-			await redis.fcall(
-				'queasy_dispatch',
-				3,
-				`${QUEUE_NAME}:waiting`,
-				`${QUEUE_NAME}:waiting_job:${jobId}`,
-				`${QUEUE_NAME}:active_job:${jobId}`,
-				jobId,
-				runAt.toString(),
-				JSON.stringify({ task: 'test' }),
-				'10',
-				'3',
-				'2000',
-				'300000',
-				'true',
-				'true',
-				'false',
-				'true'
-			);
+			await redis.fCall('queasy_dispatch', {
+				keys: [
+					`${QUEUE_NAME}:waiting`,
+					`${QUEUE_NAME}:waiting_job:${jobId}`,
+					`${QUEUE_NAME}:active_job:${jobId}`,
+				],
+				arguments: [
+					jobId,
+					runAt.toString(),
+					JSON.stringify({ task: 'test' }),
+					'10',
+					'3',
+					'2000',
+					'300000',
+					'true',
+					'true',
+					'false',
+					'true',
+				],
+			});
 
 			// Verify counts are reset
-			jobData = await redis.hgetall(`${QUEUE_NAME}:waiting_job:${jobId}`);
+			jobData = await redis.hGetAll(`${QUEUE_NAME}:waiting_job:${jobId}`);
 			assert.equal(jobData.retry_count, '0');
 			assert.equal(jobData.stall_count, '0');
 		});
@@ -391,22 +422,19 @@ describe('Redis Lua functions', () => {
 			const runAt = Date.now();
 
 			// Add a job
-			await redis.zadd(`${QUEUE_NAME}:waiting`, runAt, jobId);
-			await redis.hset(`${QUEUE_NAME}:waiting_job:${jobId}`, 'id', jobId);
+			await redis.zAdd(`${QUEUE_NAME}:waiting`, { score: runAt, value: jobId });
+			await redis.hSet(`${QUEUE_NAME}:waiting_job:${jobId}`, 'id', jobId);
 
 			// Cancel it
-			const result = await redis.fcall(
-				'queasy_cancel',
-				2,
-				`${QUEUE_NAME}:waiting`,
-				`${QUEUE_NAME}:waiting_job:${jobId}`,
-				jobId
-			);
+			const result = await redis.fCall('queasy_cancel', {
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:waiting_job:${jobId}`],
+				arguments: [jobId],
+			});
 
 			assert.equal(result, 1);
 
 			// Verify it's gone
-			const score = await redis.zscore(`${QUEUE_NAME}:waiting`, jobId);
+			const score = await redis.zScore(`${QUEUE_NAME}:waiting`, jobId);
 			assert.equal(score, null);
 
 			const exists = await redis.exists(`${QUEUE_NAME}:waiting_job:${jobId}`);
@@ -414,13 +442,10 @@ describe('Redis Lua functions', () => {
 		});
 
 		it('should return 0 if job does not exist', async () => {
-			const result = await redis.fcall(
-				'queasy_cancel',
-				2,
-				`${QUEUE_NAME}:waiting`,
-				`${QUEUE_NAME}:waiting_job:nonexistent`,
-				'nonexistent'
-			);
+			const result = await redis.fCall('queasy_cancel', {
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:waiting_job:nonexistent`],
+				arguments: ['nonexistent'],
+			});
 
 			assert.equal(result, 0);
 		});
@@ -434,37 +459,30 @@ describe('Redis Lua functions', () => {
 			const jobId2 = 'job-deq-2';
 
 			// Add jobs ready to run
-			await redis.zadd(`${QUEUE_NAME}:waiting`, now - 1000, jobId1);
-			await redis.hset(`${QUEUE_NAME}:waiting_job:${jobId1}`, 'id', jobId1);
+			await redis.zAdd(`${QUEUE_NAME}:waiting`, { score: now - 1000, value: jobId1 });
+			await redis.hSet(`${QUEUE_NAME}:waiting_job:${jobId1}`, 'id', jobId1);
 
-			await redis.zadd(`${QUEUE_NAME}:waiting`, now - 500, jobId2);
-			await redis.hset(`${QUEUE_NAME}:waiting_job:${jobId2}`, 'id', jobId2);
+			await redis.zAdd(`${QUEUE_NAME}:waiting`, { score: now - 500, value: jobId2 });
+			await redis.hSet(`${QUEUE_NAME}:waiting_job:${jobId2}`, 'id', jobId2);
 
 			// Dequeue
-			const result = (
-				await redis.fcall(
-					'queasy_dequeue',
-					2,
-					`${QUEUE_NAME}:waiting`,
-					`${QUEUE_NAME}:active`,
-					workerId,
-					now.toString(),
-					'10'
-				)
-			);
+			const result = await redis.fCall('queasy_dequeue', {
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:active`],
+				arguments: [workerId, now.toString(), '10'],
+			});
 
 			assert.equal(result.length, 2);
 			assert.deepEqual(result[0], ['id', jobId1]);
 			assert.deepEqual(result[1], ['id', jobId2]);
 
 			// Verify jobs are in active set
-            const activeMembers = await redis.zrange(`${QUEUE_NAME}:active`, 0, -1);
+			const activeMembers = await redis.zRange(`${QUEUE_NAME}:active`, 0, -1);
 			assert.equal(activeMembers.length, 2);
 			assert.ok(activeMembers.includes(`${jobId1}:${workerId}`));
 			assert.ok(activeMembers.includes(`${jobId2}:${workerId}`));
 
 			// Verify job data moved to active
-            const exists1 = await redis.exists(`${QUEUE_NAME}:active_job:${jobId1}`);
+			const exists1 = await redis.exists(`${QUEUE_NAME}:active_job:${jobId1}`);
 			assert.equal(exists1, 1);
 		});
 
@@ -474,21 +492,14 @@ describe('Redis Lua functions', () => {
 			const jobId = 'job-future';
 
 			// Add job scheduled for future
-			await redis.zadd(`${QUEUE_NAME}:waiting`, now + 10000, jobId);
-			await redis.hset(`${QUEUE_NAME}:waiting_job:${jobId}`, 'id', jobId);
+			await redis.zAdd(`${QUEUE_NAME}:waiting`, { score: now + 10000, value: jobId });
+			await redis.hSet(`${QUEUE_NAME}:waiting_job:${jobId}`, 'id', jobId);
 
 			// Try to dequeue
-			const result = /** @type {string[]} */ (
-				await redis.fcall(
-					'queasy_dequeue',
-					2,
-					`${QUEUE_NAME}:waiting`,
-					`${QUEUE_NAME}:active`,
-					workerId,
-					now.toString(),
-					'10'
-				)
-			);
+			const result = /** @type {string[]} */ await redis.fCall('queasy_dequeue', {
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:active`],
+				arguments: [workerId, now.toString(), '10'],
+			});
 
 			assert.equal(result.length, 0);
 		});
@@ -499,21 +510,14 @@ describe('Redis Lua functions', () => {
 			const jobId = 'job-blocked';
 
 			// Add blocked job (negative score)
-			await redis.zadd(`${QUEUE_NAME}:waiting`, -now, jobId);
-			await redis.hset(`${QUEUE_NAME}:waiting_job:${jobId}`, 'id', jobId);
+			await redis.zAdd(`${QUEUE_NAME}:waiting`, { score: -now, value: jobId });
+			await redis.hSet(`${QUEUE_NAME}:waiting_job:${jobId}`, 'id', jobId);
 
 			// Try to dequeue
-			const result = /** @type {string[]} */ (
-				await redis.fcall(
-					'queasy_dequeue',
-					2,
-					`${QUEUE_NAME}:waiting`,
-					`${QUEUE_NAME}:active`,
-					workerId,
-					now.toString(),
-					'10'
-				)
-			);
+			const result = /** @type {string[]} */ await redis.fCall('queasy_dequeue', {
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:active`],
+				arguments: [workerId, now.toString(), '10'],
+			});
 
 			assert.equal(result.length, 0);
 		});
@@ -526,22 +530,21 @@ describe('Redis Lua functions', () => {
 			const jobId = 'job-hb';
 
 			// Add job to active set
-			await redis.zadd(`${QUEUE_NAME}:active`, now + 5000, `${jobId}:${workerId}`);
+			await redis.zAdd(`${QUEUE_NAME}:active`, {
+				score: now + 5000,
+				value: `${jobId}:${workerId}`,
+			});
 
 			// Send heartbeat (no heartbeat_timeout parameter - it's now a constant)
-			const result = await redis.fcall(
-				'queasy_bump',
-				1,
-				`${QUEUE_NAME}:active`,
-				jobId,
-				workerId,
-				now.toString()
-			);
+			const result = await redis.fCall('queasy_bump', {
+				keys: [`${QUEUE_NAME}:active`],
+				arguments: [jobId, workerId, now.toString()],
+			});
 
 			assert.equal(result, 0); // ZADD XX returns 0 when updating
 
 			// Verify score was updated to now + 10000ms (constant)
-			const score = await redis.zscore(`${QUEUE_NAME}:active`, `${jobId}:${workerId}`);
+			const score = await redis.zScore(`${QUEUE_NAME}:active`, `${jobId}:${workerId}`);
 			assert.ok(Number(score) >= now + 10000);
 		});
 
@@ -551,14 +554,10 @@ describe('Redis Lua functions', () => {
 			const jobId = 'job-lost';
 
 			// Job not in active set
-			const result = await redis.fcall(
-				'queasy_bump',
-				1,
-				`${QUEUE_NAME}:active`,
-				jobId,
-				workerId,
-				now.toString()
-			);
+			const result = await redis.fCall('queasy_bump', {
+				keys: [`${QUEUE_NAME}:active`],
+				arguments: [jobId, workerId, now.toString()],
+			});
 
 			assert.equal(result, 0);
 		});
@@ -570,20 +569,22 @@ describe('Redis Lua functions', () => {
 			const jobId = 'job-clear';
 
 			// Setup active job
-			await redis.zadd(`${QUEUE_NAME}:active`, Date.now(), `${jobId}:${workerId}`);
-			await redis.hset(`${QUEUE_NAME}:active_job:${jobId}`, 'id', jobId);
+			await redis.zAdd(`${QUEUE_NAME}:active`, {
+				score: Date.now(),
+				value: `${jobId}:${workerId}`,
+			});
+			await redis.hSet(`${QUEUE_NAME}:active_job:${jobId}`, 'id', jobId);
 
 			// Finish (clear active)
-			const result = await redis.fcall(
-				'queasy_finish',
-				4,
-				`${QUEUE_NAME}:active`,
-				`${QUEUE_NAME}:active_job:${jobId}`,
-				`${QUEUE_NAME}:waiting`,
-				`${QUEUE_NAME}:waiting_job:${jobId}`,
-				jobId,
-				workerId
-			);
+			const result = await redis.fCall('queasy_finish', {
+				keys: [
+					`${QUEUE_NAME}:active`,
+					`${QUEUE_NAME}:active_job:${jobId}`,
+					`${QUEUE_NAME}:waiting`,
+					`${QUEUE_NAME}:waiting_job:${jobId}`,
+				],
+				arguments: [jobId, workerId],
+			});
 
 			assert.equal(result, 'OK');
 
@@ -591,7 +592,7 @@ describe('Redis Lua functions', () => {
 			const activeExists = await redis.exists(`${QUEUE_NAME}:active_job:${jobId}`);
 			assert.equal(activeExists, 0);
 
-			const inActive = await redis.zscore(`${QUEUE_NAME}:active`, `${jobId}:${workerId}`);
+			const inActive = await redis.zScore(`${QUEUE_NAME}:active`, `${jobId}:${workerId}`);
 			assert.equal(inActive, null);
 		});
 
@@ -601,33 +602,29 @@ describe('Redis Lua functions', () => {
 			const runAt = Date.now() + 5000;
 
 			// Setup active job
-			await redis.zadd(`${QUEUE_NAME}:active`, Date.now(), `${jobId}:${workerId}`);
-			await redis.hset(`${QUEUE_NAME}:active_job:${jobId}`, 'id', jobId);
+			await redis.zAdd(`${QUEUE_NAME}:active`, {
+				score: Date.now(),
+				value: `${jobId}:${workerId}`,
+			});
+			await redis.hSet(`${QUEUE_NAME}:active_job:${jobId}`, 'id', jobId);
 
 			// Setup blocked waiting job
-			await redis.zadd(`${QUEUE_NAME}:waiting`, -runAt, jobId);
-			await redis.hset(
-				`${QUEUE_NAME}:waiting_job:${jobId}`,
-				'id',
-				jobId,
-				'update_run_at',
-				'true'
-			);
+			await redis.zAdd(`${QUEUE_NAME}:waiting`, { score: -runAt, value: jobId });
+			await redis.hSet(`${QUEUE_NAME}:waiting_job:${jobId}`, { id: jobId, update_run_at: 'true' });
 
 			// Finish (clear active)
-			await redis.fcall(
-				'queasy_finish',
-				4,
-				`${QUEUE_NAME}:active`,
-				`${QUEUE_NAME}:active_job:${jobId}`,
-				`${QUEUE_NAME}:waiting`,
-				`${QUEUE_NAME}:waiting_job:${jobId}`,
-				jobId,
-				workerId
-			);
+			await redis.fCall('queasy_finish', {
+				keys: [
+					`${QUEUE_NAME}:active`,
+					`${QUEUE_NAME}:active_job:${jobId}`,
+					`${QUEUE_NAME}:waiting`,
+					`${QUEUE_NAME}:waiting_job:${jobId}`,
+				],
+				arguments: [jobId, workerId],
+			});
 
 			// Verify waiting job is unblocked (positive score)
-			const score = await redis.zscore(`${QUEUE_NAME}:waiting`, jobId);
+			const score = await redis.zScore(`${QUEUE_NAME}:waiting`, jobId);
 			assert.ok(Number(score) > 0);
 			assert.equal(Number(score), runAt);
 		});
@@ -640,36 +637,31 @@ describe('Redis Lua functions', () => {
 			const nextRunAt = Date.now() + 5000;
 
 			// Setup active job
-			await redis.zadd(`${QUEUE_NAME}:active`, Date.now(), `${jobId}:${workerId}`);
-			await redis.hset(
-				`${QUEUE_NAME}:active_job:${jobId}`,
-				'id',
-				jobId,
-				'retry_count',
-				'0',
-				'max_retries',
-				'3'
-			);
+			await redis.zAdd(`${QUEUE_NAME}:active`, {
+				score: Date.now(),
+				value: `${jobId}:${workerId}`,
+			});
+			await redis.hSet(`${QUEUE_NAME}:active_job:${jobId}`, {
+				id: jobId,
+				retry_count: '0',
+				max_retries: '3',
+			});
 
 			// Call retry
-			const result = await redis.fcall(
-				'queasy_retry',
-				4,
-				`${QUEUE_NAME}:active`,
-				`${QUEUE_NAME}:active_job:${jobId}`,
-				`${QUEUE_NAME}:waiting`,
-				`${QUEUE_NAME}:waiting_job:${jobId}`,
-				jobId,
-				workerId,
-				nextRunAt.toString(),
-                QUEUE_NAME,
-				'{"test":"error"}',
-			);
+			const result = await redis.fCall('queasy_retry', {
+				keys: [
+					`${QUEUE_NAME}:active`,
+					`${QUEUE_NAME}:active_job:${jobId}`,
+					`${QUEUE_NAME}:waiting`,
+					`${QUEUE_NAME}:waiting_job:${jobId}`,
+				],
+				arguments: [jobId, workerId, nextRunAt.toString(), QUEUE_NAME, '{"test":"error"}'],
+			});
 
 			assert.equal(result, 'OK');
 
 			// Verify retry count incremented
-			const retryCount = await redis.hget(`${QUEUE_NAME}:waiting_job:${jobId}`, 'retry_count');
+			const retryCount = await redis.hGet(`${QUEUE_NAME}:waiting_job:${jobId}`, 'retry_count');
 			assert.equal(retryCount, '1');
 		});
 
@@ -679,52 +671,39 @@ describe('Redis Lua functions', () => {
 			const nextRunAt = Date.now() + 5000;
 
 			// Setup failure queue (simulate handlers registered)
-			await redis.zadd(`${QUEUE_NAME}-fail:waiting`, 0, 'dummy');
+			await redis.zAdd(`${QUEUE_NAME}-fail:waiting`, { score: 0, value: 'dummy' });
 
 			// Setup active job at max retries
-			await redis.zadd(`${QUEUE_NAME}:active`, Date.now(), `${jobId}:${workerId}`);
-			await redis.hset(
-				`${QUEUE_NAME}:active_job:${jobId}`,
-				'id',
-				jobId,
-				'retry_count',
-                '2',
-                'stall_count',
-				'0',
-				'max_retries',
-                '3',
-                'max_stalls',
-                '3',
-                'min_backoff',
-                '2000',
-                'max_backoff',
-                '300000',
-                'update_data',
-                'true',
-                'update_run_at',
-                'false',
-                'update_retry_strategy',
-                'false',
-                'reset_counts',
-				'false',
-            );
+			await redis.zAdd(`${QUEUE_NAME}:active`, {
+				score: Date.now(),
+				value: `${jobId}:${workerId}`,
+			});
+			await redis.hSet(`${QUEUE_NAME}:active_job:${jobId}`, {
+				id: jobId,
+				retry_count: '2',
+				stall_count: '0',
+				max_retries: '3',
+				max_stalls: '3',
+				min_backoff: '2000',
+				max_backoff: '300000',
+				update_data: 'true',
+				update_run_at: 'false',
+				update_retry_strategy: 'false',
+				reset_counts: 'false',
+			});
 
 			// Call retry
-			const result = await redis.fcall(
-				'queasy_retry',
-				4,
-				`${QUEUE_NAME}:active`,
-				`${QUEUE_NAME}:active_job:${jobId}`,
-				`${QUEUE_NAME}:waiting`,
-				`${QUEUE_NAME}:waiting_job:${jobId}`,
-				jobId,
-				workerId,
-				nextRunAt.toString(),
-                QUEUE_NAME,
-                '{"test":"error"}',
-			);
+			const result = await redis.fCall('queasy_retry', {
+				keys: [
+					`${QUEUE_NAME}:active`,
+					`${QUEUE_NAME}:active_job:${jobId}`,
+					`${QUEUE_NAME}:waiting`,
+					`${QUEUE_NAME}:waiting_job:${jobId}`,
+				],
+				arguments: [jobId, workerId, nextRunAt.toString(), QUEUE_NAME, '{"test":"error"}'],
+			});
 
-            assert.equal(result, 'PERMANENT_FAILURE');
+			assert.equal(result, 'PERMANENT_FAILURE');
 
 			// Verify job is not in active or waiting
 			const activeExists = await redis.exists(`${QUEUE_NAME}:active_job:${jobId}`);
@@ -740,34 +719,27 @@ describe('Redis Lua functions', () => {
 			const nextRunAt = now + 5000;
 
 			// Setup stalled job (heartbeat expired)
-			await redis.zadd(`${QUEUE_NAME}:active`, now - 10000, `${jobId}:${workerId}`);
-			await redis.hset(
-				`${QUEUE_NAME}:active_job:${jobId}`,
-				'id',
-				jobId,
-				'stall_count',
-				'0',
-				'max_stalls',
-				'3'
-			);
+			await redis.zAdd(`${QUEUE_NAME}:active`, {
+				score: now - 10000,
+				value: `${jobId}:${workerId}`,
+			});
+			await redis.hSet(`${QUEUE_NAME}:active_job:${jobId}`, {
+				id: jobId,
+				stall_count: '0',
+				max_stalls: '3',
+			});
 
 			// Sweep (clear stalls)
-			const result = /** @type {string[]} */ (
-				await redis.fcall(
-					'queasy_sweep',
-					1,
-					`${QUEUE_NAME}:active`,
-					now.toString(),
-					QUEUE_NAME,
-					nextRunAt.toString()
-				)
-			);
+			const result = /** @type {string[]} */ await redis.fCall('queasy_sweep', {
+				keys: [`${QUEUE_NAME}:active`],
+				arguments: [now.toString(), QUEUE_NAME, nextRunAt.toString()],
+			});
 
 			assert.equal(result.length, 1);
 			assert.equal(result[0], jobId);
 
 			// Verify stall count incremented and job moved to waiting
-			const stallCount = await redis.hget(`${QUEUE_NAME}:waiting_job:${jobId}`, 'stall_count');
+			const stallCount = await redis.hGet(`${QUEUE_NAME}:waiting_job:${jobId}`, 'stall_count');
 			assert.equal(stallCount, '1');
 		});
 	});

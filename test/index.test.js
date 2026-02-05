@@ -1,33 +1,33 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import Redis from 'ioredis';
+import { createClient } from 'redis';
 
 describe('Redis connection', () => {
-	/** @type {Redis} */
+	/** @type {import('redis').RedisClientType} */
 	let redis;
 
 	before(async () => {
 		// Connect to Redis running in Docker
-		redis = new Redis({
-			host: 'localhost',
-			port: 6379,
-			maxRetriesPerRequest: 3,
-			retryStrategy: (times) => {
-				if (times > 10) {
-					return null; // Stop retrying
-				}
-				return Math.min(times * 50, 2000); // Exponential backoff
+		redis = createClient({
+			socket: {
+				host: 'localhost',
+				port: 6379,
+				reconnectStrategy: (retries) => {
+					if (retries > 10) {
+						return new Error('Max retries reached');
+					}
+					return Math.min(retries * 50, 2000); // Exponential backoff
+				},
 			},
 		});
 
+		await redis.connect();
 		// Wait for connection to be ready
 		await redis.ping();
 	});
 
 	after(async () => {
-		if (redis) {
-			await redis.quit();
-		}
+		redis.destroy();
 	});
 
 	it('should connect to Redis and execute basic commands', async () => {
