@@ -339,7 +339,6 @@ describe('Redis Lua functions', () => {
 
 			// Verify counts are set
 			let jobData = await redis.hGetAll(`${QUEUE_NAME}:waiting_job:${jobId}`);
-			console.log('JOBDATA', jobData);
 			assert.equal(jobData.retry_count, '5');
 			assert.equal(jobData.stall_count, '2');
 

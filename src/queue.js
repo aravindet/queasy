@@ -1,12 +1,15 @@
 import { readFileSync } from 'node:fs';
+import { cpus } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
 
 // Import types:
 /** @typedef {import('redis').RedisClientType} RedisClient */
 /** @typedef {import('./types.js').DefaultJobOptions} DefaultJobOptions */
 /** @typedef {import('./types.js').Queue} Queue */
 /** @typedef {import('./types.js').JobOptions} JobOptions */
+/** @typedef {import('./types.js').Job} Job */
 
 /** @type {Required<DefaultJobOptions>} */
 const DEFAULT_JOB_OPTIONS = {
@@ -32,12 +35,26 @@ const DEFAULT_FAILJOB_OPTIONS = {
 	resetCounts: false,
 };
 
+const HEARTBEAT_INTERVAL = 5000; // 5 seconds
+
 // Load Lua script
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const luaScript = readFileSync(join(__dirname, 'queasy.lua'), 'utf8');
 
 /** @type {WeakSet<RedisClient>} */
 const initializedClients = new WeakSet();
+
+/** @type {Array<{id: number, worker: Worker, status: string}>} */
+const workers = [];
+
+function ensureWorkerPool() {
+	if (workers.length > 0) return;
+	const count = cpus().length;
+	for (let i = 0; i < count; i++) {
+		const worker = new Worker(new URL('./worker.js', import.meta.url));
+		workers.push({ id: i, worker, status: 'idle' });
+	}
+}
 
 /**
  * Generate a random alphanumeric ID
@@ -51,6 +68,35 @@ function generateId(length = 20) {
 		id += chars.charAt(Math.floor(Math.random() * chars.length));
 	}
 	return id;
+}
+
+/**
+ * Parse job data from Redis response
+ * @param {string[]} jobArray - Flat array from HGETALL
+ * @returns {Job | null}
+ */
+function parseJob(jobArray) {
+	if (!jobArray || jobArray.length === 0) return null;
+
+	/** @type {Record<string, string>} */
+	const job = {};
+	for (let i = 0; i < jobArray.length; i += 2) {
+		const key = jobArray[i];
+		const value = jobArray[i + 1];
+		job[key] = value;
+	}
+
+	return {
+		id: job.id,
+		data: job.data ? JSON.parse(job.data) : undefined,
+		runAt: job.run_at ? Number(job.run_at) : 0,
+		maxRetries: Number(job.max_retries),
+		maxStalls: Number(job.max_stalls),
+		minBackoff: Number(job.min_backoff),
+		maxBackoff: Number(job.max_backoff),
+		retryCount: Number(job.retry_count),
+		stallCount: Number(job.stall_count),
+	};
 }
 
 /**
@@ -69,74 +115,75 @@ export function queue(name, redis, defaultJobOptions = {}, failureJobOptions = {
 		}
 	}
 
-	// Default options
 	const baseOpts = { ...DEFAULT_JOB_OPTIONS, ...defaultJobOptions };
 	const failOpts = { ...DEFAULT_FAILJOB_OPTIONS, ...failureJobOptions };
 	const waitingKey = `${name}:waiting`;
-	const activeKey = `${name}:active`;
+    const activeKey = `${name}:active`;
+    const workerId = generateId();
 
-	return {
-		/**
-		 * Add a job to the queue
-		 * @param {any} data - Job data (any JSON-serializable value)
-		 * @param {Partial<JobOptions>} [options] - Job options
-		 * @returns {Promise<string>} Job ID
-		 */
-		async dispatch(data, options = {}) {
-			await ensureRedisInitialized();
+	/**
+	 * Add a job to the queue
+	 * @param {any} data - Job data (any JSON-serializable value)
+	 * @param {Partial<JobOptions>} [options] - Job options
+	 * @returns {Promise<string>} Job ID
+	 */
+	async function dispatch(data, options = {}) {
+		await ensureRedisInitialized();
 
-			const opts = { ...baseOpts, ...options };
-			const id = opts.id || generateId();
-			const runAt = opts.runAt ?? 0;
-			const resetCounts = options.updateData ? opts.updateData : opts.resetCounts;
+		const opts = { ...baseOpts, ...options };
+		const id = opts.id || generateId();
+		const runAt = opts.runAt ?? 0;
+		const resetCounts = options.updateData ? opts.updateData : opts.resetCounts;
 
-			// Convert boolean/string values to strings for Lua
+		// Convert boolean/string values to strings for Lua
 
-			await redis.fCall('queasy_dispatch', {
-				keys: [waitingKey, activeKey],
-				arguments: [
-					id,
-					String(runAt),
-					JSON.stringify(data),
-					String(opts.maxRetries),
-					String(opts.maxStalls),
-					String(opts.minBackoff),
-					String(opts.maxBackoff),
-					String(opts.updateData),
-					String(opts.updateRunAt),
-					String(opts.updateRetryStrategy),
-					String(resetCounts),
-				],
-			});
+		await redis.fCall('queasy_dispatch', {
+			keys: [waitingKey, activeKey],
+			arguments: [
+				id,
+				String(runAt),
+				JSON.stringify(data),
+				String(opts.maxRetries),
+				String(opts.maxStalls),
+				String(opts.minBackoff),
+				String(opts.maxBackoff),
+				String(opts.updateData),
+				String(opts.updateRunAt),
+				String(opts.updateRetryStrategy),
+				String(resetCounts),
+			],
+		});
 
-			return id;
-		},
+		return id;
+	}
 
-		/**
-		 * Cancel a waiting job
-		 * @param {string} id - Job ID
-		 * @returns {Promise<boolean>} True if job was cancelled
-		 */
-		async cancel(id) {
-			await ensureRedisInitialized();
+	/**
+	 * Cancel a waiting job
+	 * @param {string} id - Job ID
+	 * @returns {Promise<boolean>} True if job was cancelled
+	 */
+	async function cancel(id) {
+		await ensureRedisInitialized();
 
-			const result = await redis.fCall('queasy_cancel', {
-				keys: [waitingKey],
-				arguments: [id],
-			});
+		const result = await redis.fCall('queasy_cancel', {
+			keys: [waitingKey],
+			arguments: [id],
+		});
 
-			return result === 1;
-		},
+		return result === 1;
+	}
 
-		/**
-		 * Attach handlers to process jobs from this queue
-		 * @param {string} handlerPath - Path to handler module
-		 * @returns {Promise<void>}
-		 */
-		async listen(handlerPath) {
-			await ensureRedisInitialized();
-			// TODO: Implement worker logic
-			throw new Error('listen() not yet implemented');
-		},
-	};
+	/**
+	 * Attach handlers to process jobs from this queue
+	 * @param {string} handlerPath - Path to handler module
+	 * @returns {Promise<void>}
+	 */
+	async function listen(handlerPath) {
+		ensureWorkerPool();
+		for (const { worker } of workers) {
+			worker.postMessage({ queue: name, handlerPath });
+		}
+	}
+
+	return { dispatch, cancel, listen };
 }

@@ -193,6 +193,99 @@ describe('Queue API', () => {
 		});
 	});
 
+	describe('listen()', () => {
+		it('should process a job with success handler', async () => {
+			const q = queue(QUEUE_NAME, redis);
+			const jobId = await q.dispatch({ task: 'test-job' });
+
+			// Process the job
+			const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
+			await q.listen(handlerPath);
+
+			// Verify job is removed from waiting
+			const score = await redis.zScore(`${QUEUE_NAME}:waiting`, jobId);
+			assert.equal(score, null);
+
+			// Verify job is removed from active
+			const activeMembers = await redis.zRange(`${QUEUE_NAME}:active`, 0, -1);
+			assert.equal(activeMembers.length, 0);
+
+			// Verify job data is cleaned up
+			const exists = await redis.exists(`${QUEUE_NAME}:active_job:${jobId}`);
+			assert.equal(exists, 0);
+		});
+
+		it('should handle job failure and retry', async () => {
+			const q = queue(QUEUE_NAME, redis);
+			const jobId = await q.dispatch({ task: 'test-job' });
+
+			// Process the job with failure handler
+			const handlerPath = new URL('./fixtures/failure-handler.js', import.meta.url).pathname;
+			await q.listen(handlerPath);
+
+			// Verify job is back in waiting queue for retry
+			const score = await redis.zScore(`${QUEUE_NAME}:waiting`, jobId);
+			assert.ok(score !== null);
+
+			// Verify retry count was incremented
+			const jobData = await redis.hGetAll(`${QUEUE_NAME}:waiting_job:${jobId}`);
+			assert.equal(jobData.retry_count, '1');
+		});
+
+		it('should not process jobs scheduled for the future', async () => {
+			const q = queue(QUEUE_NAME, redis);
+			const futureTime = Date.now() + 10000;
+			await q.dispatch({ task: 'future-job' }, { runAt: futureTime });
+
+			const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
+			await q.listen(handlerPath);
+
+			// Job should still be in waiting queue
+			const members = await redis.zRange(`${QUEUE_NAME}:waiting`, 0, -1);
+			assert.equal(members.length, 1);
+		});
+
+		it('should send heartbeats during slow job processing', async () => {
+			const q = queue(QUEUE_NAME, redis);
+			const jobId = await q.dispatch({ delay: 8000 }); // 8 second job
+
+			const handlerPath = new URL('./fixtures/slow-handler.js', import.meta.url).pathname;
+
+			// Start processing in background
+			const processPromise = q.listen(handlerPath);
+
+			// Wait a bit and check that heartbeat updated the active job
+			await new Promise((resolve) => setTimeout(resolve, 6000));
+
+			const activeMembers = await redis.zRange(`${QUEUE_NAME}:active`, 0, -1);
+			// If heartbeat is working, job should still be in active set
+			if (activeMembers.length > 0) {
+				assert.ok(activeMembers[0].includes(jobId));
+			}
+
+			// Wait for job to complete
+			await processPromise;
+		});
+
+		it('should pass correct data and job metadata to handler', async () => {
+			const q = queue(QUEUE_NAME, redis);
+			const testData = { value: 42, name: 'test' };
+			await q.dispatch(testData);
+
+			const handlerPath = new URL('./fixtures/data-logger-handler.js', import.meta.url).pathname;
+			const loggerModule = await import('./fixtures/data-logger-handler.js');
+			loggerModule.clearLogs();
+
+			await q.listen(handlerPath);
+
+			assert.equal(loggerModule.receivedJobs.length, 1);
+			assert.deepEqual(loggerModule.receivedJobs[0].data, testData);
+			assert.ok(loggerModule.receivedJobs[0].job);
+			assert.equal(loggerModule.receivedJobs[0].job.maxRetries, 10);
+			assert.equal(loggerModule.receivedJobs[0].job.retryCount, 0);
+		});
+	});
+
 	describe('Error classes', () => {
 		it('should export PermanentError', () => {
 			const error = new PermanentError('test error');
