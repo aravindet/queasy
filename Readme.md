@@ -23,7 +23,7 @@ This library is NOT resilient to Redis failures. If the Redis instance crashes, 
 
 Returns a queue object for interacting with this named queue at the defined Redis server.
 - name is a string queue name. Redis data structures related to a queue will be placed on the same node in a Redis cluster.
-- redisConnection is an ioredis connection object.
+- redisConnection is a node-redis connection object.
 - defaultJobOptions are defaults for the options argument to queue.dispatch() below, except for `runAt`
 - failureJobOptions are default options for jobs used to invoke failure handlers, except for `runAt`.
 

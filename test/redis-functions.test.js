@@ -59,11 +59,7 @@ describe('Redis Lua functions', () => {
 			const runAt = Date.now();
 
 			const result = await redis.fCall('queasy_dispatch', {
-				keys: [
-					`${QUEUE_NAME}:waiting`,
-					`${QUEUE_NAME}:waiting_job:${jobId}`,
-					`${QUEUE_NAME}:active_job:${jobId}`,
-				],
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:active`],
 				arguments: [
 					jobId,
 					runAt.toString(),
@@ -102,11 +98,7 @@ describe('Redis Lua functions', () => {
 			await redis.hSet(`${QUEUE_NAME}:active_job:${jobId}`, 'id', jobId);
 
 			await redis.fCall('queasy_dispatch', {
-				keys: [
-					`${QUEUE_NAME}:waiting`,
-					`${QUEUE_NAME}:waiting_job:${jobId}`,
-					`${QUEUE_NAME}:active_job:${jobId}`,
-				],
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:active`],
 				arguments: [
 					jobId,
 					runAt.toString(),
@@ -137,11 +129,7 @@ describe('Redis Lua functions', () => {
 
 			// Add job first time
 			await redis.fCall('queasy_dispatch', {
-				keys: [
-					`${QUEUE_NAME}:waiting`,
-					`${QUEUE_NAME}:waiting_job:${jobId}`,
-					`${QUEUE_NAME}:active_job:${jobId}`,
-				],
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:active`],
 				arguments: [
 					jobId,
 					runAt1.toString(),
@@ -159,11 +147,7 @@ describe('Redis Lua functions', () => {
 
 			// Try to update with update_run_at=false
 			await redis.fCall('queasy_dispatch', {
-				keys: [
-					`${QUEUE_NAME}:waiting`,
-					`${QUEUE_NAME}:waiting_job:${jobId}`,
-					`${QUEUE_NAME}:active_job:${jobId}`,
-				],
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:active`],
 				arguments: [
 					jobId,
 					runAt2.toString(),
@@ -190,11 +174,7 @@ describe('Redis Lua functions', () => {
 
 			// Add job first time
 			await redis.fCall('queasy_dispatch', {
-				keys: [
-					`${QUEUE_NAME}:waiting`,
-					`${QUEUE_NAME}:waiting_job:${jobId}`,
-					`${QUEUE_NAME}:active_job:${jobId}`,
-				],
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:active`],
 				arguments: [
 					jobId,
 					runAt.toString(),
@@ -212,11 +192,7 @@ describe('Redis Lua functions', () => {
 
 			// Try to update with update_data=false
 			await redis.fCall('queasy_dispatch', {
-				keys: [
-					`${QUEUE_NAME}:waiting`,
-					`${QUEUE_NAME}:waiting_job:${jobId}`,
-					`${QUEUE_NAME}:active_job:${jobId}`,
-				],
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:active`],
 				arguments: [
 					jobId,
 					runAt.toString(),
@@ -243,11 +219,7 @@ describe('Redis Lua functions', () => {
 
 			// Add job first time
 			await redis.fCall('queasy_dispatch', {
-				keys: [
-					`${QUEUE_NAME}:waiting`,
-					`${QUEUE_NAME}:waiting_job:${jobId}`,
-					`${QUEUE_NAME}:active_job:${jobId}`,
-				],
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:active`],
 				arguments: [
 					jobId,
 					runAt.toString(),
@@ -265,11 +237,7 @@ describe('Redis Lua functions', () => {
 
 			// Update with new retry strategy
 			await redis.fCall('queasy_dispatch', {
-				keys: [
-					`${QUEUE_NAME}:waiting`,
-					`${QUEUE_NAME}:waiting_job:${jobId}`,
-					`${QUEUE_NAME}:active_job:${jobId}`,
-				],
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:active`],
 				arguments: [
 					jobId,
 					runAt.toString(),
@@ -299,11 +267,7 @@ describe('Redis Lua functions', () => {
 
 			// Add job first time
 			await redis.fCall('queasy_dispatch', {
-				keys: [
-					`${QUEUE_NAME}:waiting`,
-					`${QUEUE_NAME}:waiting_job:${jobId}`,
-					`${QUEUE_NAME}:active_job:${jobId}`,
-				],
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:active`],
 				arguments: [
 					jobId,
 					runAt.toString(),
@@ -321,11 +285,7 @@ describe('Redis Lua functions', () => {
 
 			// Try to update with update_retry_strategy=false
 			await redis.fCall('queasy_dispatch', {
-				keys: [
-					`${QUEUE_NAME}:waiting`,
-					`${QUEUE_NAME}:waiting_job:${jobId}`,
-					`${QUEUE_NAME}:active_job:${jobId}`,
-				],
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:active`],
 				arguments: [
 					jobId,
 					runAt.toString(),
@@ -355,11 +315,7 @@ describe('Redis Lua functions', () => {
 
 			// Add job and manually set counts
 			await redis.fCall('queasy_dispatch', {
-				keys: [
-					`${QUEUE_NAME}:waiting`,
-					`${QUEUE_NAME}:waiting_job:${jobId}`,
-					`${QUEUE_NAME}:active_job:${jobId}`,
-				],
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:active`],
 				arguments: [
 					jobId,
 					runAt.toString(),
@@ -389,11 +345,7 @@ describe('Redis Lua functions', () => {
 
 			// Update with reset_counts=true
 			await redis.fCall('queasy_dispatch', {
-				keys: [
-					`${QUEUE_NAME}:waiting`,
-					`${QUEUE_NAME}:waiting_job:${jobId}`,
-					`${QUEUE_NAME}:active_job:${jobId}`,
-				],
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:active`],
 				arguments: [
 					jobId,
 					runAt.toString(),
@@ -427,7 +379,7 @@ describe('Redis Lua functions', () => {
 
 			// Cancel it
 			const result = await redis.fCall('queasy_cancel', {
-				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:waiting_job:${jobId}`],
+				keys: [`${QUEUE_NAME}:waiting`],
 				arguments: [jobId],
 			});
 
@@ -443,7 +395,7 @@ describe('Redis Lua functions', () => {
 
 		it('should return 0 if job does not exist', async () => {
 			const result = await redis.fCall('queasy_cancel', {
-				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:waiting_job:nonexistent`],
+				keys: [`${QUEUE_NAME}:waiting`],
 				arguments: ['nonexistent'],
 			});
 
@@ -577,12 +529,7 @@ describe('Redis Lua functions', () => {
 
 			// Finish (clear active)
 			const result = await redis.fCall('queasy_finish', {
-				keys: [
-					`${QUEUE_NAME}:active`,
-					`${QUEUE_NAME}:active_job:${jobId}`,
-					`${QUEUE_NAME}:waiting`,
-					`${QUEUE_NAME}:waiting_job:${jobId}`,
-				],
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:active`],
 				arguments: [jobId, workerId],
 			});
 
@@ -614,12 +561,7 @@ describe('Redis Lua functions', () => {
 
 			// Finish (clear active)
 			await redis.fCall('queasy_finish', {
-				keys: [
-					`${QUEUE_NAME}:active`,
-					`${QUEUE_NAME}:active_job:${jobId}`,
-					`${QUEUE_NAME}:waiting`,
-					`${QUEUE_NAME}:waiting_job:${jobId}`,
-				],
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:active`],
 				arguments: [jobId, workerId],
 			});
 
@@ -649,13 +591,8 @@ describe('Redis Lua functions', () => {
 
 			// Call retry
 			const result = await redis.fCall('queasy_retry', {
-				keys: [
-					`${QUEUE_NAME}:active`,
-					`${QUEUE_NAME}:active_job:${jobId}`,
-					`${QUEUE_NAME}:waiting`,
-					`${QUEUE_NAME}:waiting_job:${jobId}`,
-				],
-				arguments: [jobId, workerId, nextRunAt.toString(), QUEUE_NAME, '{"test":"error"}'],
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:active`],
+				arguments: [jobId, workerId, nextRunAt.toString(), '{"test":"error"}'],
 			});
 
 			assert.equal(result, 'OK');
@@ -694,13 +631,8 @@ describe('Redis Lua functions', () => {
 
 			// Call retry
 			const result = await redis.fCall('queasy_retry', {
-				keys: [
-					`${QUEUE_NAME}:active`,
-					`${QUEUE_NAME}:active_job:${jobId}`,
-					`${QUEUE_NAME}:waiting`,
-					`${QUEUE_NAME}:waiting_job:${jobId}`,
-				],
-				arguments: [jobId, workerId, nextRunAt.toString(), QUEUE_NAME, '{"test":"error"}'],
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:active`],
+				arguments: [jobId, workerId, nextRunAt.toString(), '{"test":"error"}'],
 			});
 
 			assert.equal(result, 'PERMANENT_FAILURE');
@@ -731,8 +663,8 @@ describe('Redis Lua functions', () => {
 
 			// Sweep (clear stalls)
 			const result = /** @type {string[]} */ await redis.fCall('queasy_sweep', {
-				keys: [`${QUEUE_NAME}:active`],
-				arguments: [now.toString(), QUEUE_NAME, nextRunAt.toString()],
+				keys: [`${QUEUE_NAME}:waiting`, `${QUEUE_NAME}:active`],
+				arguments: [now.toString(), nextRunAt.toString()],
 			});
 
 			assert.equal(result.length, 1);
