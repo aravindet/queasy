@@ -42,6 +42,7 @@ const DEFAULT_FAILJOB_OPTIONS = {
 const HEARTBEAT_INTERVAL = 5000; // 5 seconds
 const WORKER_CAPACITY = 10;
 const DEQUEUE_INTERVAL = 100; // ms
+const HEARTBEAT_TIMEOUT = 10000; // 10 seconds
 
 // Load Lua script
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -105,13 +106,13 @@ async function done(workerEntry, msg) {
  * @param {WorkerEntry} workerEntry
  */
 async function bump(workerEntry) {
-	const now = String(Date.now());
+	const expiry = String(Date.now() + HEARTBEAT_TIMEOUT);
 	for (const jobId of workerEntry.jobIds) {
 		const queue = jobMap.get(jobId);
 		if (!queue) continue;
 		await queue.redis.fCall('queasy_bump', {
 			keys: [queue.activeKey],
-			arguments: [jobId, workerEntry.id, now],
+			arguments: [jobId, workerEntry.id, expiry],
 		});
 	}
 }
@@ -239,10 +240,12 @@ class Queue {
 			if (available <= 0) continue;
 
 			try {
+				const now = String(Date.now());
+				const expiry = String(Date.now() + HEARTBEAT_TIMEOUT);
 				/** @type {Job} */
 				const jobs = await this.redis.fCall('queasy_dequeue', {
 					keys: [this.waitingKey, this.activeKey],
-					arguments: [workerEntry.id, String(Date.now()), String(available)],
+					arguments: [workerEntry.id, now, expiry, String(available)],
 				});
 
 				for (const rawJob of jobs) {
@@ -254,7 +257,11 @@ class Queue {
 						// Job has stalled too many times - fail it permanently
 						await this.redis.fCall('queasy_fail', {
 							keys: [this.waitingKey, this.activeKey],
-							arguments: [job.id, workerEntry.id, JSON.stringify({ message: 'Max stalls exceeded' })],
+							arguments: [
+								job.id,
+								workerEntry.id,
+								JSON.stringify({ message: 'Max stalls exceeded' }),
+							],
 						});
 						continue;
 					}
@@ -286,6 +293,11 @@ class Queue {
 		await this.ensureRedisInitialized();
 		ensureWorkerPool();
 
+		// Check if handler exports a failure handler
+		const { pathToFileURL } = await import('node:url');
+		const handlerModule = await import(pathToFileURL(handlerPath).href);
+		this.hasFailureHandler = typeof handlerModule.handleFailure === 'function';
+
 		// Store retry options with defaults
 		this.retryOptions = {
 			maxRetries: options.maxRetries ?? DEFAULT_JOB_OPTIONS.maxRetries,
@@ -293,6 +305,11 @@ class Queue {
 			minBackoff: options.minBackoff ?? DEFAULT_JOB_OPTIONS.minBackoff,
 			maxBackoff: options.maxBackoff ?? DEFAULT_JOB_OPTIONS.maxBackoff,
 		};
+
+		// Create failure handler queue name if needed
+		if (this.hasFailureHandler) {
+			this.failQueueName = `${this.name}-fail`;
+		}
 
 		for (const { worker } of workers) {
 			worker.postMessage({
@@ -323,28 +340,38 @@ class Queue {
 			return;
 		}
 
-		// Error occurred - determine if retriable
-		if (isPermanent) {
-			// Permanent error: call fail
-			await this.redis.fCall('queasy_fail', {
-				keys: [this.waitingKey, this.activeKey],
-				arguments: [jobId, workerId, error],
-			});
-			return;
-		}
-
 		// Get job to check retry count
 		const activeJobKey = `{${this.name}}:active_job:${jobId}`;
 		const jobData = await this.redis.hGetAll(activeJobKey);
 		const retryCount = Number(jobData.retry_count || 0);
 
-		// Check retry limit
-		if (!this.retryOptions || retryCount >= this.retryOptions.maxRetries) {
-			// Exceeded retry limit: call fail
-			await this.redis.fCall('queasy_fail', {
-				keys: [this.waitingKey, this.activeKey],
-				arguments: [jobId, workerId, error],
-			});
+		// Determine if job should fail permanently
+		const shouldFail =
+			isPermanent || !this.retryOptions || retryCount >= this.retryOptions.maxRetries;
+
+		if (shouldFail) {
+			// Job failed permanently
+			if (this.hasFailureHandler) {
+				// Create fail job data
+				const failJobId = generateId();
+				const failWaitingKey = `{${this.failQueueName}}:waiting`;
+				const failActiveKey = `{${this.failQueueName}}:active`;
+
+				// Pack original job id, data, and error into array
+				const failJobData = JSON.stringify([jobId, jobData.data || '{}', error || '{}']);
+
+				// Call queasy_fail to dispatch fail job and finish original
+				await this.redis.fCall('queasy_fail', {
+					keys: [this.waitingKey, this.activeKey, failWaitingKey, failActiveKey],
+					arguments: [jobId, workerId, failJobId, failJobData],
+				});
+			} else {
+				// No failure handler - just finish the job
+				await this.redis.fCall('queasy_finish', {
+					keys: [this.waitingKey, this.activeKey],
+					arguments: [jobId, workerId],
+				});
+			}
 			return;
 		}
 

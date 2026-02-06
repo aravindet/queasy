@@ -11,32 +11,11 @@ Key structure:
 ]]
 
 -- Constants
-local ACTIVE_TIMEOUT_MS = 10000
 local SWEEP_BATCH_SIZE = 100
 
 -- Helper: Generate job key from queue key and id
 local function get_job_key(queue_key, id)
     return queue_key .. '_job:' .. id
-end
-
--- Helper: Extract queue name from a key by taking the first segment before ":"
-local function get_queue_name(key)
-    local colon_pos = key:find(':')
-    if colon_pos then
-        return key:sub(1, colon_pos - 1)
-    end
-    return key
-end
-
--- Helper: Generate a random 20-character ID
-local function generate_id()
-    local chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
-    local id = {}
-    for i = 1, 20 do
-        local rand_index = math.random(1, #chars)
-        table.insert(id, chars:sub(rand_index, rand_index))
-    end
-    return table.concat(id)
 end
 
 -- Helper: Add job to waiting queue with appropriate flags
@@ -164,29 +143,14 @@ local function finish(waiting_key, active_key, id, worker_id)
 end
 
 -- Helper: Handle permanent failure
-local function fail(waiting_key, active_key, id, worker_id, error)
-    local active_job_key = get_job_key(active_key, id)
-    local queue_name = get_queue_name(waiting_key)
-    local fail_config_key = queue_name .. '-fail:config'
-    local fail_config = redis.call('HGETALL', fail_config_key)['map']
+-- Creates a fail job and finishes the original job
+local function fail(waiting_key, active_key, fail_waiting_key, fail_active_key, id, worker_id, fail_job_id, fail_job_data)
+    -- Dispatch the fail job
+    dispatch(fail_waiting_key, fail_active_key,
+        fail_job_id, 0, fail_job_data,
+        'false', 'false', 'false')
 
-    if fail_config then
-        local job = redis.call('HGETALL', active_job_key)['map']
-
-        if next(job) then
-            local fail_job_id = generate_id()
-            local fail_waiting_key = queue_name .. '-fail:waiting'
-            local fail_active_key = queue_name .. '-fail:active'
-
-            -- Wrap data in JSON array without deserializing
-            local data = '[' .. id .. ',' .. (job.data or '{}') .. ',' .. (error or '{}') .. ']'
-
-            dispatch(fail_waiting_key, fail_active_key,
-                fail_job_id, 0, data,
-                'false', 'false', 'false')
-        end
-    end
-
+    -- Finish the original job
     finish(waiting_key, active_key, id, worker_id)
 
     return { ok = 'OK' }
@@ -221,7 +185,7 @@ local function handle_stall(waiting_key, active_key, id, worker_id, retry_at)
 end
 
 -- Dequeue jobs from waiting queue
-local function dequeue(waiting_key, active_key, worker_id, now, limit)
+local function dequeue(waiting_key, active_key, worker_id, now, expiry, limit)
     local jobs = redis.call('ZRANGEBYSCORE', waiting_key, 0, now, 'LIMIT', 0, limit)
     local result = {}
 
@@ -238,7 +202,7 @@ local function dequeue(waiting_key, active_key, worker_id, now, limit)
                 local job = redis.call('HGETALL', active_job_key)
                 local active_item = id .. ':' .. worker_id
 
-                redis.call('ZADD', active_key, now + ACTIVE_TIMEOUT_MS, active_item)
+                redis.call('ZADD', active_key, expiry, active_item)
                 table.insert(result, job)
             end
         end
@@ -258,9 +222,9 @@ local function cancel(waiting_key, id)
 end
 
 -- Bump heartbeat for active job
-local function bump(active_key, id, worker_id, now)
+local function bump(active_key, id, worker_id, expiry)
     local active_item = id .. ':' .. worker_id
-    local result = redis.call('ZADD', active_key, 'XX', now + ACTIVE_TIMEOUT_MS, active_item)
+    local result = redis.call('ZADD', active_key, 'XX', expiry, active_item)
     return result or 0
 end
 
@@ -314,10 +278,11 @@ redis.register_function {
         local active_key = keys[2]
         local worker_id = args[1]
         local now = tonumber(args[2])
-        local limit = tonumber(args[3])
+        local expiry = tonumber(args[3])
+        local limit = tonumber(args[4])
 
         redis.setresp(3)
-        return dequeue(waiting_key, active_key, worker_id, now, limit)
+        return dequeue(waiting_key, active_key, worker_id, now, expiry, limit)
     end,
     flags = {}
 }
@@ -342,10 +307,10 @@ redis.register_function {
         local active_key = keys[1]
         local id = args[1]
         local worker_id = args[2]
-        local now = tonumber(args[3])
+        local expiry = tonumber(args[3])
 
         redis.setresp(3)
-        return bump(active_key, id, worker_id, now)
+        return bump(active_key, id, worker_id, expiry)
     end,
     flags = {}
 }
@@ -388,12 +353,15 @@ redis.register_function {
     callback = function(keys, args)
         local waiting_key = keys[1]
         local active_key = keys[2]
+        local fail_waiting_key = keys[3]
+        local fail_active_key = keys[4]
         local id = args[1]
         local worker_id = args[2]
-        local error = args[3]
+        local fail_job_id = args[3]
+        local fail_job_data = args[4]
 
         redis.setresp(3)
-        return fail(waiting_key, active_key, id, worker_id, error)
+        return fail(waiting_key, active_key, fail_waiting_key, fail_active_key, id, worker_id, fail_job_id, fail_job_data)
     end,
     flags = {}
 }
