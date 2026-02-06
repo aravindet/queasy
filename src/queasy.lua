@@ -200,7 +200,8 @@ local function fail(waiting_key, active_key, id, worker_id, error)
 
             dispatch(fail_waiting_key, fail_active_key,
                 fail_job_id, 0, data,
-                fail_config.max_retries, fail_config.max_stalls, fail_config.min_backoff, fail_config.max_backoff,
+                tostring(fail_config.max_retries), tostring(fail_config.max_stalls),
+                tostring(fail_config.min_backoff), tostring(fail_config.max_backoff),
                 'false', 'false', 'false', 'false')
         end
     end
@@ -217,16 +218,11 @@ local function retry(waiting_key, active_key, id, worker_id, retry_at, error)
     redis.call('ZREM', active_key, active_item)
 
     local retry_count = tonumber(redis.call('HGET', active_job_key, 'retry_count'))
-    local max_retries = tonumber(redis.call('HGET', active_job_key, 'max_retries'))
 
     retry_count = retry_count + 1
     redis.call('HSET', active_job_key, 'retry_count', retry_count)
 
-    if retry_count >= max_retries then
-        return fail(waiting_key, active_key, id, worker_id, error)
-    else
-        return do_retry(waiting_key, active_key, id, retry_at)
-    end
+    return do_retry(waiting_key, active_key, id, retry_at)
 end
 
 -- Helper: Handle stalled job

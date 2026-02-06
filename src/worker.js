@@ -48,8 +48,8 @@ parentPort.on('message', async (msg) => {
 				}
 				const done = { op: 'done', jobId: job.id, error: JSON.stringify(errorObj) };
 
-				// For retriable errors, always include retryAt (exponential backoff or custom)
-				if (!(err instanceof PermanentError)) {
+				// Check if error is retriable (not PermanentError and under retry limit)
+				if (!(err instanceof PermanentError) && job.retryCount < job.maxRetries) {
 					const baseBackoff = job.minBackoff * Math.pow(2, job.retryCount || 0);
 					const backoff = Math.min(job.maxBackoff, baseBackoff);
 					const calculatedRetryAt = Date.now() + backoff;
