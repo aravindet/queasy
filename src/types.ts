@@ -67,12 +67,18 @@ export interface JobState {
 export type Job = JobCoreOptions & JobRetryOptions & JobState;
 
 /**
+ * Retry strategy options for listen()
+ */
+export type ListenOptions = JobRetryOptions;
+
+/**
  * Messages from the main thread to a worker
  */
 export type InitMessage = {
 	op: 'init';
 	queue: string;
 	handler: string;
+	retryOptions: Required<JobRetryOptions>;
 };
 
 export type ExecMessage = {

@@ -66,8 +66,7 @@ end
 local function dispatch(
     waiting_key, active_key,
     id, run_at, data,
-    max_retries, max_stalls, min_backoff, max_backoff,
-    update_data, update_run_at, update_retry_strategy, reset_counts
+    update_data, update_run_at, reset_counts
 )
     local waiting_job_key = get_job_key(waiting_key, id)
     local active_job_key = get_job_key(active_key, id)
@@ -90,20 +89,6 @@ local function dispatch(
         redis.call('HSETNX', waiting_job_key, 'data', data)
     end
 
-    -- Handle retry strategy
-    if update_retry_strategy == 'true' then
-        redis.call('HSET', waiting_job_key,
-            'max_retries', max_retries,
-            'max_stalls', max_stalls,
-            'min_backoff', min_backoff,
-            'max_backoff', max_backoff)
-    else
-        redis.call('HSETNX', waiting_job_key, 'max_retries', max_retries)
-        redis.call('HSETNX', waiting_job_key, 'max_stalls', max_stalls)
-        redis.call('HSETNX', waiting_job_key, 'min_backoff', min_backoff)
-        redis.call('HSETNX', waiting_job_key, 'max_backoff', max_backoff)
-    end
-
     -- Check if there's an active job with this ID
     local is_blocked = redis.call('EXISTS', active_job_key) == 1
     local score = is_blocked and -run_at or run_at
@@ -113,8 +98,7 @@ local function dispatch(
         redis.call('HSET', waiting_job_key,
             'reset_counts', reset_counts,
             'update_data', update_data,
-            'update_run_at', update_run_at,
-            'update_retry_strategy', update_retry_strategy)
+            'update_run_at', update_run_at)
     end
 
     -- Add to waiting queue
@@ -200,9 +184,7 @@ local function fail(waiting_key, active_key, id, worker_id, error)
 
             dispatch(fail_waiting_key, fail_active_key,
                 fail_job_id, 0, data,
-                tostring(fail_config.max_retries), tostring(fail_config.max_stalls),
-                tostring(fail_config.min_backoff), tostring(fail_config.max_backoff),
-                'false', 'false', 'false', 'false')
+                'false', 'false', 'false')
         end
     end
 
@@ -232,16 +214,11 @@ local function handle_stall(waiting_key, active_key, id, worker_id, retry_at)
     redis.call('ZREM', active_key, active_item)
 
     local stall_count = tonumber(redis.call('HGET', active_job_key, 'stall_count'))
-    local max_stalls = tonumber(redis.call('HGET', active_job_key, 'max_stalls'))
 
     stall_count = stall_count + 1
     redis.call('HSET', active_job_key, 'stall_count', stall_count)
 
-    if stall_count >= max_stalls then
-        return fail(waiting_key, active_key, id, worker_id, '{"type":"stall"}')
-    else
-        return do_retry(waiting_key, active_key, id, retry_at)
-    end
+    return do_retry(waiting_key, active_key, id, retry_at)
 end
 
 -- Dequeue jobs from waiting queue
@@ -325,21 +302,15 @@ redis.register_function {
         local id = args[1]
         local run_at = tonumber(args[2])
         local data = args[3]
-        local max_retries = args[4]
-        local max_stalls = args[5]
-        local min_backoff = args[6]
-        local max_backoff = args[7]
-        local update_data = args[8]
-        local update_run_at = args[9]
-        local update_retry_strategy = args[10]
-        local reset_counts = args[11]
+        local update_data = args[4]
+        local update_run_at = args[5]
+        local reset_counts = args[6]
 
         redis.setresp(3)
         return dispatch(
             waiting_key, active_key,
             id, run_at, data,
-            max_retries, max_stalls, min_backoff, max_backoff,
-            update_data, update_run_at, update_retry_strategy, reset_counts
+            update_data, update_run_at, reset_counts
         )
     end,
     flags = {}

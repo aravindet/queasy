@@ -150,12 +150,8 @@ function parseJob(jobArray) {
 		id: job.id,
 		data: job.data ? JSON.parse(job.data) : undefined,
 		runAt: job.run_at ? Number(job.run_at) : 0,
-		maxRetries: Number(job.max_retries),
-		maxStalls: Number(job.max_stalls),
-		minBackoff: Number(job.min_backoff),
-		maxBackoff: Number(job.max_backoff),
-		retryCount: Number(job.retry_count),
-		stallCount: Number(job.stall_count),
+		retryCount: Number(job.retry_count || 0),
+		stallCount: Number(job.stall_count || 0),
 	};
 }
 
@@ -166,18 +162,15 @@ class Queue {
 	/**
 	 * @param {string} name - Queue name
 	 * @param {RedisClient} redis - Redis client
-	 * @param {Partial<DefaultJobOptions>} [defaultJobOptions] - Default options for jobs
-	 * @param {Partial<DefaultJobOptions>} [failureJobOptions] - Default options for failure handler jobs
 	 */
-	constructor(name, redis, defaultJobOptions = {}, failureJobOptions = {}) {
+	constructor(name, redis) {
 		this.name = name;
 		this.redis = redis;
-		this.baseOpts = { ...DEFAULT_JOB_OPTIONS, ...defaultJobOptions };
-		this.failOpts = { ...DEFAULT_FAILJOB_OPTIONS, ...failureJobOptions };
 		this.waitingKey = `{${name}}:waiting`;
 		this.activeKey = `{${name}}:active`;
 		this.dequeueStarted = false;
 		this.dequeueInterval = null;
+		this.retryOptions = null;
 		allQueues.add(this);
 	}
 
@@ -191,16 +184,17 @@ class Queue {
 	/**
 	 * Add a job to the queue
 	 * @param {any} data - Job data (any JSON-serializable value)
-	 * @param {Partial<JobOptions>} [options] - Job options
+	 * @param {Partial<import('./types.js').JobCoreOptions & import('./types.js').JobUpdateOptions>} [options] - Job options
 	 * @returns {Promise<string>} Job ID
 	 */
 	async dispatch(data, options = {}) {
 		await this.ensureRedisInitialized();
 
-		const opts = { ...this.baseOpts, ...options };
-		const id = opts.id || generateId();
-		const runAt = opts.runAt ?? 0;
-		const resetCounts = options.updateData ? opts.updateData : opts.resetCounts;
+		const id = options.id || generateId();
+		const runAt = options.runAt ?? 0;
+		const updateData = options.updateData ?? false;
+		const updateRunAt = options.updateRunAt ?? false;
+		const resetCounts = options.resetCounts ?? false;
 
 		await this.redis.fCall('queasy_dispatch', {
 			keys: [this.waitingKey, this.activeKey],
@@ -208,13 +202,8 @@ class Queue {
 				id,
 				String(runAt),
 				JSON.stringify(data),
-				String(opts.maxRetries),
-				String(opts.maxStalls),
-				String(opts.minBackoff),
-				String(opts.maxBackoff),
-				String(opts.updateData),
-				String(opts.updateRunAt),
-				String(opts.updateRetryStrategy),
+				String(updateData),
+				String(updateRunAt),
 				String(resetCounts),
 			],
 		});
@@ -259,9 +248,23 @@ class Queue {
 				for (const rawJob of jobs) {
 					const job = parseJob(rawJob);
 					if (!job) continue;
+
+					// Check if job has exceeded stall limit
+					if (this.retryOptions && job.stallCount >= this.retryOptions.maxStalls) {
+						// Job has stalled too many times - fail it permanently
+						await this.redis.fCall('queasy_fail', {
+							keys: [this.waitingKey, this.activeKey],
+							arguments: [job.id, workerEntry.id, JSON.stringify({ message: 'Max stalls exceeded' })],
+						});
+						continue;
+					}
+
+					// Add retry options to job for worker
+					const jobWithOptions = { ...job, ...this.retryOptions };
+
 					workerEntry.jobIds.add(job.id);
 					jobMap.set(job.id, this);
-					workerEntry.worker.postMessage({ op: 'exec', queue: this.name, job });
+					workerEntry.worker.postMessage({ op: 'exec', queue: this.name, job: jobWithOptions });
 				}
 			} catch (err) {
 				// Redis client may be closed during tests or shutdown - ignore these errors
@@ -276,13 +279,28 @@ class Queue {
 	/**
 	 * Attach handlers to process jobs from this queue
 	 * @param {string} handlerPath - Path to handler module
+	 * @param {Partial<import('./types.js').ListenOptions>} [options] - Retry strategy options
 	 * @returns {Promise<void>}
 	 */
-	async listen(handlerPath) {
+	async listen(handlerPath, options = {}) {
 		await this.ensureRedisInitialized();
 		ensureWorkerPool();
+
+		// Store retry options with defaults
+		this.retryOptions = {
+			maxRetries: options.maxRetries ?? DEFAULT_JOB_OPTIONS.maxRetries,
+			maxStalls: options.maxStalls ?? DEFAULT_JOB_OPTIONS.maxStalls,
+			minBackoff: options.minBackoff ?? DEFAULT_JOB_OPTIONS.minBackoff,
+			maxBackoff: options.maxBackoff ?? DEFAULT_JOB_OPTIONS.maxBackoff,
+		};
+
 		for (const { worker } of workers) {
-			worker.postMessage({ op: 'init', queue: this.name, handler: handlerPath });
+			worker.postMessage({
+				op: 'init',
+				queue: this.name,
+				handler: handlerPath,
+				retryOptions: this.retryOptions,
+			});
 		}
 		this.startDequeue();
 	}
@@ -332,12 +350,10 @@ class Queue {
  * Create a queue object for interacting with a named queue
  * @param {string} name - Queue name (without braces - they will be added automatically)
  * @param {RedisClient} redis - Redis client
- * @param {Partial<DefaultJobOptions>} [defaultJobOptions] - Default options for jobs
- * @param {Partial<DefaultJobOptions>} [failureJobOptions] - Default options for failure handler jobs
  * @returns {Queue} Queue object with dispatch, cancel, and listen methods
  */
-export function queue(name, redis, defaultJobOptions, failureJobOptions) {
-	return new Queue(name, redis, defaultJobOptions, failureJobOptions);
+export function queue(name, redis) {
+	return new Queue(name, redis);
 }
 
 /**
