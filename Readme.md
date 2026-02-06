@@ -1,4 +1,4 @@
-# Queasy
+# Queasy 🤢
 
 A simple Redis-backed queue library for Node.js with support for:
 
@@ -12,10 +12,10 @@ A simple Redis-backed queue library for Node.js with support for:
 - Scheduled jobs
 - Cancelling scheduled jobs
 - Updating scheduled jobs
-- Singleton semantics: prevent instances of repeated jobs running concurrently 
+- Singleton semantics: prevent instances of repeated jobs running concurrently
 - Dynamic concurrency based on worker CPU utilization
 
-This library is NOT resilient to Redis failures. If the Redis instance crashes, jobs may crash, multiple workers might be assigned the same job, etc.
+This library is NOT resilient to Redis failures. If the Redis instance crashes, jobs may crash, multiple workers might be assigned the same job, etc. If that makes you queasy, this is not the queue library for you.
 
 ## API
 

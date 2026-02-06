@@ -88,7 +88,7 @@ async function handleWorkerMessage(workerEntry, msg) {
 /**
  * Handle job completion (success, retry, or permanent failure)
  * @param {WorkerEntry} workerEntry
- * @param {WorkerToParentMessage} msg
+ * @param {DoneMessage} msg
  */
 async function done(workerEntry, msg) {
 	const queue = jobMap.get(msg.jobId);
@@ -109,18 +109,10 @@ async function bump(workerEntry) {
 	for (const jobId of workerEntry.jobIds) {
 		const queue = jobMap.get(jobId);
 		if (!queue) continue;
-		try {
-			await queue.redis.fCall('queasy_bump', {
-				keys: [queue.activeKey],
-				arguments: [jobId, workerEntry.id, now],
-			});
-		} catch (err) {
-			// Redis client may be closed during tests or shutdown - ignore these errors
-			if (err.message?.includes('closed')) {
-				continue;
-			}
-			throw err;
-		}
+		await queue.redis.fCall('queasy_bump', {
+			keys: [queue.activeKey],
+			arguments: [jobId, workerEntry.id, now],
+		});
 	}
 }
 

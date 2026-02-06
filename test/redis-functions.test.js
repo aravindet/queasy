@@ -634,7 +634,7 @@ describe('Redis Lua functions', () => {
 				arguments: [jobId, workerId, nextRunAt.toString(), '{"test":"error"}'],
 			});
 
-			assert.equal(result, 'PERMANENT_FAILURE');
+			assert.equal(result, 'OK');
 
 			// Verify job is not in active or waiting
 			const activeExists = await redis.exists(`${QUEUE_NAME}:active_job:${jobId}`);

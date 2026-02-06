@@ -69,32 +69,32 @@ export type Job = JobCoreOptions & JobRetryOptions & JobState;
 /**
  * Messages from the main thread to a worker
  */
-export type ParentToWorkerInit = {
+export type InitMessage = {
 	op: 'init';
 	queue: string;
 	handler: string;
 };
 
-export type ParentToWorkerExec = {
+export type ExecMessage = {
 	op: 'exec';
 	queue: string;
 	job: Job;
 };
 
-export type ParentToWorkerMessage = ParentToWorkerInit | ParentToWorkerExec;
+export type ParentToWorkerMessage = InitMessage | ExecMessage;
 
 /**
  * Messages from a worker back to the main thread
  */
-export type WorkerToBumpMessage = {
+export type BumpMessage = {
 	op: 'bump';
 };
 
-export type WorkerToDoneMessage = {
+export type DoneMessage = {
 	op: 'done';
 	jobId: string;
 	error?: string;
 	retryAt?: number;
 };
 
-export type WorkerToParentMessage = WorkerToBumpMessage | WorkerToDoneMessage;
+export type WorkerToParentMessage = BumpMessage | DoneMessage;
