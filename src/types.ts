@@ -67,18 +67,6 @@ export interface JobState {
 export type Job = JobCoreOptions & JobRetryOptions & JobState;
 
 /**
- * Queue interface
- */
-export interface Queue {
-	/** Add a job to the queue */
-	dispatch(data: any, options?: Partial<JobOptions>): Promise<string>;
-	/** Cancel a waiting job */
-	cancel(id: string): Promise<boolean>;
-	/** Attach handlers to process jobs */
-	listen(handlerPath: string): Promise<void>;
-}
-
-/**
  * Messages from the main thread to a worker
  */
 export type ParentToWorkerInit = {

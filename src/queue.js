@@ -7,12 +7,12 @@ import { Worker } from 'node:worker_threads';
 // Import types:
 /** @typedef {import('redis').RedisClientType} RedisClient */
 /** @typedef {import('./types.js').DefaultJobOptions} DefaultJobOptions */
-/** @typedef {import('./types.js').Queue} Queue */
 /** @typedef {import('./types.js').JobOptions} JobOptions */
 /** @typedef {import('./types.js').Job} Job */
 /** @typedef {import('./types.js').ParentToWorkerMessage} ParentToWorkerMessage */
 /** @typedef {import('./types.js').WorkerToParentMessage} WorkerToParentMessage */
 
+// Types used only in this file
 /** @typedef {{worker: Worker, jobIds: Set<string>, id: string}} WorkerEntry */
 
 /** @type {Required<DefaultJobOptions>} */
@@ -53,8 +53,8 @@ const initializedClients = new WeakSet();
 /** @type {Array<WorkerEntry>} */
 const workers = [];
 
-/** @type {Map<string, {redis: RedisClient, waitingKey: string, activeKey: string, workerId: string}>} */
-const jobMeta = new Map();
+/** @type {Map<string, Queue>} */
+const jobMap = new Map();
 
 function ensureWorkerPool() {
 	if (workers.length > 0) return;
@@ -76,35 +76,25 @@ async function handleWorkerMessage(workerEntry, msg) {
 		case 'bump':
 			await bump(workerEntry);
 			break;
-		case 'done': {
-			const meta = jobMeta.get(msg.jobId);
-			if (!meta) break;
-
-			workerEntry.jobIds.delete(msg.jobId);
-			jobMeta.delete(msg.jobId);
-
-			if (!msg.error) {
-				// Success: call finish
-				await meta.redis.fCall('queasy_finish', {
-					keys: [meta.waitingKey, meta.activeKey],
-					arguments: [msg.jobId, meta.workerId],
-				});
-			} else if (msg.retryAt != null) {
-				// Retriable error: call retry
-				await meta.redis.fCall('queasy_retry', {
-					keys: [meta.waitingKey, meta.activeKey],
-					arguments: [msg.jobId, meta.workerId, String(msg.retryAt), msg.error],
-				});
-			} else {
-				// Permanent error: call fail
-				await meta.redis.fCall('queasy_fail', {
-					keys: [meta.waitingKey, meta.activeKey],
-					arguments: [msg.jobId, meta.workerId, msg.error],
-				});
-			}
+		case 'done':
+			await done(workerEntry, msg);
 			break;
-		}
 	}
+}
+
+/**
+ * Handle job completion (success, retry, or permanent failure)
+ * @param {WorkerEntry} workerEntry
+ * @param {WorkerToParentMessage} msg
+ */
+async function done(workerEntry, msg) {
+	const queue = jobMap.get(msg.jobId);
+	if (!queue) return;
+
+	workerEntry.jobIds.delete(msg.jobId);
+	jobMap.delete(msg.jobId);
+
+	await queue.done(msg.jobId, workerEntry.id, msg.error, msg.retryAt);
 }
 
 /**
@@ -114,12 +104,20 @@ async function handleWorkerMessage(workerEntry, msg) {
 async function bump(workerEntry) {
 	const now = String(Date.now());
 	for (const jobId of workerEntry.jobIds) {
-		const meta = jobMeta.get(jobId);
-		if (!meta) continue;
-		await meta.redis.fCall('queasy_bump', {
-			keys: [meta.activeKey],
-			arguments: [jobId, workerEntry.id, now],
-		});
+		const queue = jobMap.get(jobId);
+		if (!queue) continue;
+		try {
+			await queue.redis.fCall('queasy_bump', {
+				keys: [queue.activeKey],
+				arguments: [jobId, workerEntry.id, now],
+			});
+		} catch (err) {
+			// Redis client may be closed during tests or shutdown - ignore these errors
+			if (err.message?.includes('closed')) {
+				continue;
+			}
+			throw err;
+		}
 	}
 }
 
@@ -167,25 +165,31 @@ function parseJob(jobArray) {
 }
 
 /**
- * Create a queue object for interacting with a named queue
- * @param {string} name - Queue name
- * @param {RedisClient} redis - Redis client
- * @param {Partial<DefaultJobOptions>} [defaultJobOptions] - Default options for jobs
- * @param {Partial<DefaultJobOptions>} [failureJobOptions] - Default options for failure handler jobs
- * @returns {Queue} Queue object with dispatch, cancel, and listen methods
+ * Queue instance for managing a named job queue
  */
-export function queue(name, redis, defaultJobOptions = {}, failureJobOptions = {}) {
-	async function ensureRedisInitialized() {
-		if (!initializedClients.has(redis)) {
-			await redis.sendCommand(['FUNCTION', 'LOAD', 'REPLACE', luaScript]);
-			initializedClients.add(redis);
-		}
+class Queue {
+	/**
+	 * @param {string} name - Queue name
+	 * @param {RedisClient} redis - Redis client
+	 * @param {Partial<DefaultJobOptions>} [defaultJobOptions] - Default options for jobs
+	 * @param {Partial<DefaultJobOptions>} [failureJobOptions] - Default options for failure handler jobs
+	 */
+	constructor(name, redis, defaultJobOptions = {}, failureJobOptions = {}) {
+		this.name = name;
+		this.redis = redis;
+		this.baseOpts = { ...DEFAULT_JOB_OPTIONS, ...defaultJobOptions };
+		this.failOpts = { ...DEFAULT_FAILJOB_OPTIONS, ...failureJobOptions };
+		this.waitingKey = `${name}:waiting`;
+		this.activeKey = `${name}:active`;
+		this.dequeueStarted = false;
 	}
 
-	const baseOpts = { ...DEFAULT_JOB_OPTIONS, ...defaultJobOptions };
-	const failOpts = { ...DEFAULT_FAILJOB_OPTIONS, ...failureJobOptions };
-	const waitingKey = `${name}:waiting`;
-	const activeKey = `${name}:active`;
+	async ensureRedisInitialized() {
+		if (!initializedClients.has(this.redis)) {
+			await this.redis.sendCommand(['FUNCTION', 'LOAD', 'REPLACE', luaScript]);
+			initializedClients.add(this.redis);
+		}
+	}
 
 	/**
 	 * Add a job to the queue
@@ -193,18 +197,16 @@ export function queue(name, redis, defaultJobOptions = {}, failureJobOptions = {
 	 * @param {Partial<JobOptions>} [options] - Job options
 	 * @returns {Promise<string>} Job ID
 	 */
-	async function dispatch(data, options = {}) {
-		await ensureRedisInitialized();
+	async dispatch(data, options = {}) {
+		await this.ensureRedisInitialized();
 
-		const opts = { ...baseOpts, ...options };
+		const opts = { ...this.baseOpts, ...options };
 		const id = opts.id || generateId();
 		const runAt = opts.runAt ?? 0;
 		const resetCounts = options.updateData ? opts.updateData : opts.resetCounts;
 
-		// Convert boolean/string values to strings for Lua
-
-		await redis.fCall('queasy_dispatch', {
-			keys: [waitingKey, activeKey],
+		await this.redis.fCall('queasy_dispatch', {
+			keys: [this.waitingKey, this.activeKey],
 			arguments: [
 				id,
 				String(runAt),
@@ -228,41 +230,48 @@ export function queue(name, redis, defaultJobOptions = {}, failureJobOptions = {
 	 * @param {string} id - Job ID
 	 * @returns {Promise<boolean>} True if job was cancelled
 	 */
-	async function cancel(id) {
-		await ensureRedisInitialized();
+	async cancel(id) {
+		await this.ensureRedisInitialized();
 
-		const result = await redis.fCall('queasy_cancel', {
-			keys: [waitingKey],
+		const result = await this.redis.fCall('queasy_cancel', {
+			keys: [this.waitingKey],
 			arguments: [id],
 		});
 
 		return result === 1;
 	}
 
-	let dequeueStarted = false;
-
-	function startDequeue() {
-		if (dequeueStarted) return;
-		dequeueStarted = true;
-		setInterval(dequeue, DEQUEUE_INTERVAL);
+	startDequeue() {
+		if (this.dequeueStarted) return;
+		this.dequeueStarted = true;
+		setInterval(() => this.dequeue(), DEQUEUE_INTERVAL);
 	}
 
-	async function dequeue() {
+	async dequeue() {
 		for (const workerEntry of workers) {
 			const available = WORKER_CAPACITY - workerEntry.jobIds.size;
 			if (available <= 0) continue;
 
-			const jobs = await redis.fCall('queasy_dequeue', {
-				keys: [waitingKey, activeKey],
-				arguments: [workerEntry.id, String(Date.now()), String(available)],
-			});
+			try {
+				/** @type {Job} */
+				const jobs = await this.redis.fCall('queasy_dequeue', {
+					keys: [this.waitingKey, this.activeKey],
+					arguments: [workerEntry.id, String(Date.now()), String(available)],
+				});
 
-			for (const rawJob of jobs) {
-				const job = parseJob(rawJob);
-				if (!job) continue;
-				workerEntry.jobIds.add(job.id);
-				jobMeta.set(job.id, { redis, waitingKey, activeKey, workerId: workerEntry.id });
-				workerEntry.worker.postMessage({ op: 'exec', queue: name, job });
+				for (const rawJob of jobs) {
+					const job = parseJob(rawJob);
+					if (!job) continue;
+					workerEntry.jobIds.add(job.id);
+					jobMap.set(job.id, this);
+					workerEntry.worker.postMessage({ op: 'exec', queue: this.name, job });
+				}
+			} catch (err) {
+				// Redis client may be closed during tests or shutdown - ignore these errors
+				if (err.message?.includes('closed')) {
+					return;
+				}
+				throw err;
 			}
 		}
 	}
@@ -272,14 +281,53 @@ export function queue(name, redis, defaultJobOptions = {}, failureJobOptions = {
 	 * @param {string} handlerPath - Path to handler module
 	 * @returns {Promise<void>}
 	 */
-	async function listen(handlerPath) {
-		await ensureRedisInitialized();
+	async listen(handlerPath) {
+		await this.ensureRedisInitialized();
 		ensureWorkerPool();
 		for (const { worker } of workers) {
-			worker.postMessage({ op: 'init', queue: name, handler: handlerPath });
+			worker.postMessage({ op: 'init', queue: this.name, handler: handlerPath });
 		}
-		startDequeue();
+		this.startDequeue();
 	}
 
-	return { dispatch, cancel, listen };
+	/**
+	 * Handle job completion - calls finish, retry, or fail based on outcome
+	 * @param {string} jobId - Job ID
+	 * @param {string} workerId - Worker ID
+	 * @param {string} [error] - Error message (JSON-serialized)
+	 * @param {number} [retryAt] - Retry timestamp
+	 */
+	async done(jobId, workerId, error, retryAt) {
+		if (!error) {
+			// Success: call finish
+			await this.redis.fCall('queasy_finish', {
+				keys: [this.waitingKey, this.activeKey],
+				arguments: [jobId, workerId],
+			});
+		} else if (retryAt != null) {
+			// Retriable error: call retry
+			await this.redis.fCall('queasy_retry', {
+				keys: [this.waitingKey, this.activeKey],
+				arguments: [jobId, workerId, String(retryAt), error],
+			});
+		} else {
+			// Permanent error: call fail
+			await this.redis.fCall('queasy_fail', {
+				keys: [this.waitingKey, this.activeKey],
+				arguments: [jobId, workerId, error],
+			});
+		}
+	}
+}
+
+/**
+ * Create a queue object for interacting with a named queue
+ * @param {string} name - Queue name
+ * @param {RedisClient} redis - Redis client
+ * @param {Partial<DefaultJobOptions>} [defaultJobOptions] - Default options for jobs
+ * @param {Partial<DefaultJobOptions>} [failureJobOptions] - Default options for failure handler jobs
+ * @returns {Queue} Queue object with dispatch, cancel, and listen methods
+ */
+export function queue(name, redis, defaultJobOptions, failureJobOptions) {
+	return new Queue(name, redis, defaultJobOptions, failureJobOptions);
 }
