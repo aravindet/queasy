@@ -128,8 +128,7 @@ local function do_retry(waiting_key, active_key, id, retry_at)
             dispatch(
                 waiting_key, active_key,
                 id, run_at, job.data,
-                job.max_retries, job.max_stalls, job.min_backoff, job.max_backoff,
-                job.update_data, job.update_run_at, job.update_retry_strategy, job.reset_counts
+                job.update_data, job.update_run_at, job.reset_counts
             )
         end
     else
@@ -284,15 +283,6 @@ local function sweep(waiting_key, active_key, now, retry_at)
     return processed_jobs
 end
 
--- Store default job configuration
-local function configure(config_key, max_retries, max_stalls, min_backoff, max_backoff)
-    return redis.call('HSET', config_key,
-        'max_retries', max_retries,
-        'max_stalls', max_stalls,
-        'min_backoff', min_backoff,
-        'max_backoff', max_backoff)
-end
-
 -- Register: queasy_dispatch
 redis.register_function {
     function_name = 'queasy_dispatch',
@@ -428,22 +418,6 @@ redis.register_function {
     function_name = 'queasy_version',
     callback = function(keys, args)
         return 1
-    end,
-    flags = {}
-}
-
--- Register: queasy_configure
-redis.register_function {
-    function_name = 'queasy_configure',
-    callback = function(keys, args)
-        local config_key = keys[1]
-        local max_retries = args[4]
-        local max_stalls = args[5]
-        local min_backoff = args[6]
-        local max_backoff = args[7]
-
-        redis.setresp(3)
-        return configure(config_key, max_retries, max_stalls, min_backoff, max_backoff)
     end,
     flags = {}
 }

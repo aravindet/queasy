@@ -100,7 +100,8 @@ export type DoneMessage = {
 	op: 'done';
 	jobId: string;
 	error?: string;
-	retryAt?: number;
+	customRetryAt?: number;
+	isPermanent?: boolean;
 };
 
 export type WorkerToParentMessage = BumpMessage | DoneMessage;

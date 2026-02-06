@@ -97,7 +97,7 @@ async function done(workerEntry, msg) {
 	workerEntry.jobIds.delete(msg.jobId);
 	jobMap.delete(msg.jobId);
 
-	await queue.done(msg.jobId, workerEntry.id, msg.error, msg.retryAt);
+	await queue.done(msg.jobId, workerEntry.id, msg.error, msg.customRetryAt, msg.isPermanent);
 }
 
 /**
@@ -310,28 +310,55 @@ class Queue {
 	 * @param {string} jobId - Job ID
 	 * @param {string} workerId - Worker ID
 	 * @param {string} [error] - Error message (JSON-serialized)
-	 * @param {number} [retryAt] - Retry timestamp
+	 * @param {number} [customRetryAt] - Custom retry timestamp from error
+	 * @param {boolean} [isPermanent] - Whether error is permanent
 	 */
-	async done(jobId, workerId, error, retryAt) {
+	async done(jobId, workerId, error, customRetryAt, isPermanent) {
 		if (!error) {
 			// Success: call finish
 			await this.redis.fCall('queasy_finish', {
 				keys: [this.waitingKey, this.activeKey],
 				arguments: [jobId, workerId],
 			});
-		} else if (retryAt != null) {
-			// Retriable error: call retry
-			await this.redis.fCall('queasy_retry', {
-				keys: [this.waitingKey, this.activeKey],
-				arguments: [jobId, workerId, String(retryAt), error],
-			});
-		} else {
+			return;
+		}
+
+		// Error occurred - determine if retriable
+		if (isPermanent) {
 			// Permanent error: call fail
 			await this.redis.fCall('queasy_fail', {
 				keys: [this.waitingKey, this.activeKey],
 				arguments: [jobId, workerId, error],
 			});
+			return;
 		}
+
+		// Get job to check retry count
+		const activeJobKey = `{${this.name}}:active_job:${jobId}`;
+		const jobData = await this.redis.hGetAll(activeJobKey);
+		const retryCount = Number(jobData.retry_count || 0);
+
+		// Check retry limit
+		if (!this.retryOptions || retryCount >= this.retryOptions.maxRetries) {
+			// Exceeded retry limit: call fail
+			await this.redis.fCall('queasy_fail', {
+				keys: [this.waitingKey, this.activeKey],
+				arguments: [jobId, workerId, error],
+			});
+			return;
+		}
+
+		// Calculate retry time with exponential backoff
+		const baseBackoff = this.retryOptions.minBackoff * Math.pow(2, retryCount);
+		const backoff = Math.min(this.retryOptions.maxBackoff, baseBackoff);
+		const calculatedRetryAt = Date.now() + backoff;
+		const retryAt = Math.max(customRetryAt ?? 0, calculatedRetryAt);
+
+		// Retriable error: call retry
+		await this.redis.fCall('queasy_retry', {
+			keys: [this.waitingKey, this.activeKey],
+			arguments: [jobId, workerId, String(retryAt), error],
+		});
 	}
 
 	/**
