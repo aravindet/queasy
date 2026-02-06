@@ -56,6 +56,9 @@ const workers = [];
 /** @type {Map<string, Queue>} */
 const jobMap = new Map();
 
+/** @type {Set<Queue>} */
+const allQueues = new Set();
+
 function ensureWorkerPool() {
 	if (workers.length > 0) return;
 	const count = cpus().length;
@@ -179,9 +182,11 @@ class Queue {
 		this.redis = redis;
 		this.baseOpts = { ...DEFAULT_JOB_OPTIONS, ...defaultJobOptions };
 		this.failOpts = { ...DEFAULT_FAILJOB_OPTIONS, ...failureJobOptions };
-		this.waitingKey = `${name}:waiting`;
-		this.activeKey = `${name}:active`;
+		this.waitingKey = `{${name}}:waiting`;
+		this.activeKey = `{${name}}:active`;
 		this.dequeueStarted = false;
+		this.dequeueInterval = null;
+		allQueues.add(this);
 	}
 
 	async ensureRedisInitialized() {
@@ -244,7 +249,7 @@ class Queue {
 	startDequeue() {
 		if (this.dequeueStarted) return;
 		this.dequeueStarted = true;
-		setInterval(() => this.dequeue(), DEQUEUE_INTERVAL);
+		this.dequeueInterval = setInterval(() => this.dequeue(), DEQUEUE_INTERVAL);
 	}
 
 	async dequeue() {
@@ -318,11 +323,22 @@ class Queue {
 			});
 		}
 	}
+
+	/**
+	 * Stop the dequeue interval for this queue
+	 */
+	close() {
+		if (this.dequeueInterval) {
+			clearInterval(this.dequeueInterval);
+			this.dequeueInterval = null;
+			this.dequeueStarted = false;
+		}
+	}
 }
 
 /**
  * Create a queue object for interacting with a named queue
- * @param {string} name - Queue name
+ * @param {string} name - Queue name (without braces - they will be added automatically)
  * @param {RedisClient} redis - Redis client
  * @param {Partial<DefaultJobOptions>} [defaultJobOptions] - Default options for jobs
  * @param {Partial<DefaultJobOptions>} [failureJobOptions] - Default options for failure handler jobs
@@ -330,4 +346,23 @@ class Queue {
  */
 export function queue(name, redis, defaultJobOptions, failureJobOptions) {
 	return new Queue(name, redis, defaultJobOptions, failureJobOptions);
+}
+
+/**
+ * Terminate all worker threads and clear all queue intervals
+ * Call this to allow clean process exit
+ */
+export function closeWorkers() {
+	// Close all queue dequeue intervals
+	for (const queue of allQueues) {
+		queue.close();
+	}
+	allQueues.clear();
+
+	// Terminate all worker threads
+	for (const { worker } of workers) {
+		worker.terminate();
+	}
+	workers.length = 0;
+	jobMap.clear();
 }

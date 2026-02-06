@@ -1,9 +1,9 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
 import { createClient } from 'redis';
-import { queue } from '../src/index.js';
+import { queue, closeWorkers } from '../src/index.js';
 
-const QUEUE_NAME = '{test}';
+const QUEUE_NAME = 'test';
 
 describe('Queue E2E', () => {
 	/** @type {import('redis').RedisClientType} */
@@ -19,14 +19,17 @@ describe('Queue E2E', () => {
 	});
 
 	afterEach(async () => {
-		// Give dequeue interval time to complete current iteration
-		await new Promise((r) => setTimeout(r, 150));
-
-		const keys = await redis.keys(`${QUEUE_NAME}*`);
+		// Clean up all queue data
+		const keys = await redis.keys(`{${QUEUE_NAME}}*`);
 		if (keys.length > 0) {
 			await redis.del(keys);
 		}
+
+		// Close Redis connection
 		await redis.quit();
+
+		// Terminate worker threads to allow clean exit
+		closeWorkers();
 	});
 
 	/**
@@ -39,8 +42,8 @@ describe('Queue E2E', () => {
 	async function waitForJobCompletion(jobId, timeoutMs = 3000, queueName = QUEUE_NAME) {
 		const deadline = Date.now() + timeoutMs;
 		while (Date.now() < deadline) {
-			const waiting = await redis.zScore(`${queueName}:waiting`, jobId);
-			const activeKeys = await redis.keys(`${queueName}:active*`);
+			const waiting = await redis.zScore(`{${queueName}}:waiting`, jobId);
+			const activeKeys = await redis.keys(`{${queueName}}:active*`);
 			if (waiting === null && activeKeys.length === 0) {
 				return true;
 			}
@@ -58,11 +61,11 @@ describe('Queue E2E', () => {
 			assert.equal(typeof jobId, 'string');
 
 			// Job should be in waiting queue
-			const score = await redis.zScore(`${QUEUE_NAME}:waiting`, jobId);
+			const score = await redis.zScore(`{${QUEUE_NAME}}:waiting`, jobId);
 			assert.ok(score !== null);
 
 			// Job data should exist
-			const jobData = await redis.hGetAll(`${QUEUE_NAME}:waiting_job:${jobId}`);
+			const jobData = await redis.hGetAll(`{${QUEUE_NAME}}:waiting_job:${jobId}`);
 			assert.equal(jobData.id, jobId);
 			assert.equal(jobData.data, JSON.stringify({ task: 'test-job' }));
 		});
@@ -74,7 +77,7 @@ describe('Queue E2E', () => {
 
 			assert.equal(jobId, customId);
 
-			const score = await redis.zScore(`${QUEUE_NAME}:waiting`, customId);
+			const score = await redis.zScore(`{${QUEUE_NAME}}:waiting`, customId);
 			assert.ok(score !== null);
 		});
 
@@ -83,7 +86,7 @@ describe('Queue E2E', () => {
 			const futureTime = Date.now() + 10000;
 			const jobId = await q.dispatch({ task: 'future' }, { runAt: futureTime });
 
-			const score = await redis.zScore(`${QUEUE_NAME}:waiting`, jobId);
+			const score = await redis.zScore(`{${QUEUE_NAME}}:waiting`, jobId);
 			assert.equal(score, futureTime);
 		});
 
@@ -94,7 +97,7 @@ describe('Queue E2E', () => {
 			await q.dispatch({ value: 1 }, { id: jobId });
 			await q.dispatch({ value: 2 }, { id: jobId, updateData: true });
 
-			const jobData = await redis.hGetAll(`${QUEUE_NAME}:waiting_job:${jobId}`);
+			const jobData = await redis.hGetAll(`{${QUEUE_NAME}}:waiting_job:${jobId}`);
 			assert.equal(jobData.data, JSON.stringify({ value: 2 }));
 		});
 
@@ -105,7 +108,7 @@ describe('Queue E2E', () => {
 			await q.dispatch({ value: 1 }, { id: jobId });
 			await q.dispatch({ value: 2 }, { id: jobId, updateData: false });
 
-			const jobData = await redis.hGetAll(`${QUEUE_NAME}:waiting_job:${jobId}`);
+			const jobData = await redis.hGetAll(`{${QUEUE_NAME}}:waiting_job:${jobId}`);
 			assert.equal(jobData.data, JSON.stringify({ value: 1 }));
 		});
 	});
@@ -119,10 +122,10 @@ describe('Queue E2E', () => {
 			assert.equal(cancelled, true);
 
 			// Job should be removed
-			const score = await redis.zScore(`${QUEUE_NAME}:waiting`, jobId);
+			const score = await redis.zScore(`{${QUEUE_NAME}}:waiting`, jobId);
 			assert.equal(score, null);
 
-			const exists = await redis.exists(`${QUEUE_NAME}:waiting_job:${jobId}`);
+			const exists = await redis.exists(`{${QUEUE_NAME}}:waiting_job:${jobId}`);
 			assert.equal(exists, 0);
 		});
 
@@ -145,10 +148,10 @@ describe('Queue E2E', () => {
 			assert.ok(completed, 'Job should complete within timeout');
 
 			// Job should be removed from all queues
-			const waitingScore = await redis.zScore(`${QUEUE_NAME}:waiting`, jobId);
+			const waitingScore = await redis.zScore(`{${QUEUE_NAME}}:waiting`, jobId);
 			assert.equal(waitingScore, null);
 
-			const activeKeys = await redis.keys(`${QUEUE_NAME}:active*`);
+			const activeKeys = await redis.keys(`{${QUEUE_NAME}}:active*`);
 			assert.equal(activeKeys.length, 0);
 		});
 
@@ -168,10 +171,10 @@ describe('Queue E2E', () => {
 			assert.ok(results.every((r) => r === true), 'All jobs should complete');
 
 			// All jobs should be cleaned up
-			const waitingJobs = await redis.zRange(`${QUEUE_NAME}:waiting`, 0, -1);
+			const waitingJobs = await redis.zRange(`{${QUEUE_NAME}}:waiting`, 0, -1);
 			assert.equal(waitingJobs.length, 0);
 
-			const activeKeys = await redis.keys(`${QUEUE_NAME}:active*`);
+			const activeKeys = await redis.keys(`{${QUEUE_NAME}}:active*`);
 			assert.equal(activeKeys.length, 0);
 		});
 
@@ -187,7 +190,7 @@ describe('Queue E2E', () => {
 			await new Promise((r) => setTimeout(r, 500));
 
 			// Job should still be waiting
-			const score = await redis.zScore(`${QUEUE_NAME}:waiting`, jobId);
+			const score = await redis.zScore(`{${QUEUE_NAME}}:waiting`, jobId);
 			assert.ok(score !== null);
 			assert.equal(score, futureTime);
 		});
@@ -209,18 +212,18 @@ describe('Queue E2E', () => {
 			assert.ok(job2Completed);
 
 			// job1 should not exist
-			const job1Score = await redis.zScore(`${QUEUE_NAME}:waiting`, jobId1);
+			const job1Score = await redis.zScore(`{${QUEUE_NAME}}:waiting`, jobId1);
 			assert.equal(job1Score, null);
 
-			const job1Exists = await redis.exists(`${QUEUE_NAME}:waiting_job:${jobId1}`);
+			const job1Exists = await redis.exists(`{${QUEUE_NAME}}:waiting_job:${jobId1}`);
 			assert.equal(job1Exists, 0);
 		});
 	});
 
 	describe('multiple queues', () => {
 		it('should handle multiple independent queues', async () => {
-			const queue1 = queue('{queue1}', redis);
-			const queue2 = queue('{queue2}', redis);
+			const queue1 = queue('queue1', redis);
+			const queue2 = queue('queue2', redis);
 
 			const jobId1 = await queue1.dispatch({ queue: 1 });
 			const jobId2 = await queue2.dispatch({ queue: 2 });
@@ -231,17 +234,14 @@ describe('Queue E2E', () => {
 
 			// Both jobs should complete
 			const [completed1, completed2] = await Promise.all([
-				waitForJobCompletion(jobId1, 3000, '{queue1}'),
-				waitForJobCompletion(jobId2, 3000, '{queue2}'),
+				waitForJobCompletion(jobId1, 3000, 'queue1'),
+				waitForJobCompletion(jobId2, 3000, 'queue2'),
 			]);
 
 			assert.ok(completed1, 'Queue 1 job should complete');
 			assert.ok(completed2, 'Queue 2 job should complete');
 
-			// Wait a bit to ensure cleanup is complete
-			await new Promise((r) => setTimeout(r, 200));
-
-			// Cleanup queue2
+			// Cleanup
 			const keys2 = await redis.keys('{queue2}*');
 			if (keys2.length > 0) await redis.del(keys2);
 
