@@ -10,6 +10,10 @@ import { Worker } from 'node:worker_threads';
 /** @typedef {import('./types.js').Queue} Queue */
 /** @typedef {import('./types.js').JobOptions} JobOptions */
 /** @typedef {import('./types.js').Job} Job */
+/** @typedef {import('./types.js').ParentToWorkerMessage} ParentToWorkerMessage */
+/** @typedef {import('./types.js').WorkerToParentMessage} WorkerToParentMessage */
+
+/** @typedef {{worker: Worker, jobIds: Set<string>, id: string}} WorkerEntry */
 
 /** @type {Required<DefaultJobOptions>} */
 const DEFAULT_JOB_OPTIONS = {
@@ -36,6 +40,8 @@ const DEFAULT_FAILJOB_OPTIONS = {
 };
 
 const HEARTBEAT_INTERVAL = 5000; // 5 seconds
+const WORKER_CAPACITY = 10;
+const DEQUEUE_INTERVAL = 100; // ms
 
 // Load Lua script
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -44,15 +50,76 @@ const luaScript = readFileSync(join(__dirname, 'queasy.lua'), 'utf8');
 /** @type {WeakSet<RedisClient>} */
 const initializedClients = new WeakSet();
 
-/** @type {Array<{id: number, worker: Worker, status: string}>} */
+/** @type {Array<WorkerEntry>} */
 const workers = [];
+
+/** @type {Map<string, {redis: RedisClient, waitingKey: string, activeKey: string, workerId: string}>} */
+const jobMeta = new Map();
 
 function ensureWorkerPool() {
 	if (workers.length > 0) return;
 	const count = cpus().length;
 	for (let i = 0; i < count; i++) {
 		const worker = new Worker(new URL('./worker.js', import.meta.url));
-		workers.push({ id: i, worker, status: 'idle' });
+		const entry = { worker, jobIds: new Set(), id: generateId() };
+		worker.on('message', (msg) => handleWorkerMessage(entry, msg));
+		workers.push(entry);
+	}
+}
+
+/**
+ * @param {WorkerEntry} workerEntry
+ * @param {WorkerToParentMessage} msg
+ */
+async function handleWorkerMessage(workerEntry, msg) {
+	switch (msg.op) {
+		case 'bump':
+			await bump(workerEntry);
+			break;
+		case 'done': {
+			const meta = jobMeta.get(msg.jobId);
+			if (!meta) break;
+
+			workerEntry.jobIds.delete(msg.jobId);
+			jobMeta.delete(msg.jobId);
+
+			if (!msg.error) {
+				// Success: call finish
+				await meta.redis.fCall('queasy_finish', {
+					keys: [meta.waitingKey, meta.activeKey],
+					arguments: [msg.jobId, meta.workerId],
+				});
+			} else if (msg.retryAt != null) {
+				// Retriable error: call retry
+				await meta.redis.fCall('queasy_retry', {
+					keys: [meta.waitingKey, meta.activeKey],
+					arguments: [msg.jobId, meta.workerId, String(msg.retryAt), msg.error],
+				});
+			} else {
+				// Permanent error: call fail
+				await meta.redis.fCall('queasy_fail', {
+					keys: [meta.waitingKey, meta.activeKey],
+					arguments: [msg.jobId, meta.workerId, msg.error],
+				});
+			}
+			break;
+		}
+	}
+}
+
+/**
+ * Send heartbeat bump to Redis for every active job on this worker
+ * @param {WorkerEntry} workerEntry
+ */
+async function bump(workerEntry) {
+	const now = String(Date.now());
+	for (const jobId of workerEntry.jobIds) {
+		const meta = jobMeta.get(jobId);
+		if (!meta) continue;
+		await meta.redis.fCall('queasy_bump', {
+			keys: [meta.activeKey],
+			arguments: [jobId, workerEntry.id, now],
+		});
 	}
 }
 
@@ -118,8 +185,7 @@ export function queue(name, redis, defaultJobOptions = {}, failureJobOptions = {
 	const baseOpts = { ...DEFAULT_JOB_OPTIONS, ...defaultJobOptions };
 	const failOpts = { ...DEFAULT_FAILJOB_OPTIONS, ...failureJobOptions };
 	const waitingKey = `${name}:waiting`;
-    const activeKey = `${name}:active`;
-    const workerId = generateId();
+	const activeKey = `${name}:active`;
 
 	/**
 	 * Add a job to the queue
@@ -173,16 +239,46 @@ export function queue(name, redis, defaultJobOptions = {}, failureJobOptions = {
 		return result === 1;
 	}
 
+	let dequeueStarted = false;
+
+	function startDequeue() {
+		if (dequeueStarted) return;
+		dequeueStarted = true;
+		setInterval(dequeue, DEQUEUE_INTERVAL);
+	}
+
+	async function dequeue() {
+		for (const workerEntry of workers) {
+			const available = WORKER_CAPACITY - workerEntry.jobIds.size;
+			if (available <= 0) continue;
+
+			const jobs = await redis.fCall('queasy_dequeue', {
+				keys: [waitingKey, activeKey],
+				arguments: [workerEntry.id, String(Date.now()), String(available)],
+			});
+
+			for (const rawJob of jobs) {
+				const job = parseJob(rawJob);
+				if (!job) continue;
+				workerEntry.jobIds.add(job.id);
+				jobMeta.set(job.id, { redis, waitingKey, activeKey, workerId: workerEntry.id });
+				workerEntry.worker.postMessage({ op: 'exec', queue: name, job });
+			}
+		}
+	}
+
 	/**
 	 * Attach handlers to process jobs from this queue
 	 * @param {string} handlerPath - Path to handler module
 	 * @returns {Promise<void>}
 	 */
 	async function listen(handlerPath) {
+		await ensureRedisInitialized();
 		ensureWorkerPool();
 		for (const { worker } of workers) {
-			worker.postMessage({ queue: name, handlerPath });
+			worker.postMessage({ op: 'init', queue: name, handler: handlerPath });
 		}
+		startDequeue();
 	}
 
 	return { dispatch, cancel, listen };

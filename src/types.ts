@@ -77,3 +77,36 @@ export interface Queue {
 	/** Attach handlers to process jobs */
 	listen(handlerPath: string): Promise<void>;
 }
+
+/**
+ * Messages from the main thread to a worker
+ */
+export type ParentToWorkerInit = {
+	op: 'init';
+	queue: string;
+	handler: string;
+};
+
+export type ParentToWorkerExec = {
+	op: 'exec';
+	queue: string;
+	job: Job;
+};
+
+export type ParentToWorkerMessage = ParentToWorkerInit | ParentToWorkerExec;
+
+/**
+ * Messages from a worker back to the main thread
+ */
+export type WorkerToBumpMessage = {
+	op: 'bump';
+};
+
+export type WorkerToDoneMessage = {
+	op: 'done';
+	jobId: string;
+	error?: string;
+	retryAt?: number;
+};
+
+export type WorkerToParentMessage = WorkerToBumpMessage | WorkerToDoneMessage;

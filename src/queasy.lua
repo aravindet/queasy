@@ -71,6 +71,10 @@ local function dispatch(
 )
     local waiting_job_key = get_job_key(waiting_key, id)
     local active_job_key = get_job_key(active_key, id)
+
+    -- id is always stored so that HGETALL (e.g. during dequeue) includes it
+    redis.call('HSET', waiting_job_key, 'id', id)
+
     -- If reset_counts is true, reset counters to 0, otherwise initialize them
     if reset_counts == 'true' then
         redis.call('HSET', waiting_job_key, 'retry_count', '0', 'stall_count', '0')
