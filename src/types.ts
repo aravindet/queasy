@@ -1,5 +1,3 @@
-import type { RedisClientType } from 'redis';
-
 /**
  * Core job identification and data
  */
@@ -9,7 +7,7 @@ export interface JobCoreOptions {
 	/** Job data (any JSON-serializable value) */
 	// biome-ignore lint/suspicious/noExplicitAny: Data is any serializable value
 	data?: any;
-	/** Wall clock timestamp before which job must not run */
+	/** Wall clock timestamp (ms) before which job must not run */
 	runAt?: number;
 }
 
@@ -28,6 +26,14 @@ export interface JobRetryOptions {
 }
 
 /**
+ * Options for listen() - queue-level retry strategy
+ */
+export interface ListenOptions extends JobRetryOptions {
+	/** Path to failure handler module (optional) */
+	failHandler?: string;
+}
+
+/**
  * Update behavior flags
  */
 export interface JobUpdateOptions {
@@ -35,21 +41,14 @@ export interface JobUpdateOptions {
 	updateData?: boolean;
 	/** How to update runAt */
 	updateRunAt?: boolean | 'if_later' | 'if_earlier';
-	/** Whether to update retry strategy fields */
-	updateRetryStrategy?: boolean;
 	/** Whether to reset retry_count and stall_count to 0 */
 	resetCounts?: boolean;
 }
 
 /**
- * Default options for jobs (used at queue level)
- */
-export type DefaultJobOptions = JobRetryOptions & JobUpdateOptions;
-
-/**
  * Complete options accepted by dispatch()
  */
-export type JobOptions = DefaultJobOptions & JobCoreOptions;
+export type JobOptions = JobCoreOptions & JobUpdateOptions;
 
 /**
  * Job runtime state
@@ -64,15 +63,10 @@ export interface JobState {
 /**
  * Complete job representation passed to handlers
  */
-export type Job = JobCoreOptions & JobRetryOptions & JobState;
+export type Job = Required<JobCoreOptions> & JobState;
 
 /**
- * Retry strategy options for listen()
- */
-export type ListenOptions = JobRetryOptions;
-
-/**
- * Messages from the main thread to a worker
+ * Messages between the main thread and workers
  */
 export type InitMessage = {
 	op: 'init';
@@ -87,11 +81,6 @@ export type ExecMessage = {
 	job: Job;
 };
 
-export type ParentToWorkerMessage = InitMessage | ExecMessage;
-
-/**
- * Messages from a worker back to the main thread
- */
 export type BumpMessage = {
 	op: 'bump';
 };
@@ -104,4 +93,5 @@ export type DoneMessage = {
 	isPermanent?: boolean;
 };
 
+export type ParentToWorkerMessage = InitMessage | ExecMessage;
 export type WorkerToParentMessage = BumpMessage | DoneMessage;

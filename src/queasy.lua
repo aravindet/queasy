@@ -54,29 +54,21 @@ local function dispatch(
     redis.call('HSET', waiting_job_key, 'id', id)
 
     -- If reset_counts is true, reset counters to 0, otherwise initialize them
-    if reset_counts == 'true' then
-        redis.call('HSET', waiting_job_key, 'retry_count', '0', 'stall_count', '0')
-    else
-        redis.call('HSETNX', waiting_job_key, 'retry_count', '0')
-        redis.call('HSETNX', waiting_job_key, 'stall_count', '0')
-    end
+    redis.call(reset_counts and 'HSET' or 'HSETNX', waiting_job_key, 'retry_count', '0')
+    redis.call(reset_counts and 'HSET' or 'HSETNX', waiting_job_key, 'stall_count', '0')
 
     -- Handle data
-    if update_data == 'true' then
-        redis.call('HSET', waiting_job_key, 'data', data)
-    else
-        redis.call('HSETNX', waiting_job_key, 'data', data)
-    end
+    redis.call(update_data and 'HSET' or 'HSETNX', waiting_job_key, 'data', data)
 
     -- Check if there's an active job with this ID
     local is_blocked = redis.call('EXISTS', active_job_key) == 1
-    local score = is_blocked and -run_at or run_at
+    local score = is_blocked and -tonumber(run_at) or tonumber(run_at)
 
     if is_blocked then
         -- save these flags in case they need to be applied later
         redis.call('HSET', waiting_job_key,
-            'reset_counts', reset_counts,
-            'update_data', update_data,
+            'reset_counts', tostring(reset_counts),
+            'update_data', tostring(update_data),
             'update_run_at', update_run_at)
     end
 
@@ -94,9 +86,7 @@ local function do_retry(waiting_key, active_key, id, retry_at)
     local existing_score = redis.call('ZSCORE', waiting_key, id)
 
     if existing_score then
-        if existing_score > 0 then return { err = 'ERR_UNBLOCKED_DUPLICATE_PREVENTS_RETRY' } end
-
-        local run_at = -tonumber(existing_score)
+        local run_at = -existing_score.double
         local job = redis.call('HGETALL', waiting_job_key)['map']
 
         redis.call('DEL', waiting_job_key)
@@ -107,7 +97,7 @@ local function do_retry(waiting_key, active_key, id, retry_at)
             dispatch(
                 waiting_key, active_key,
                 id, run_at, job.data,
-                job.update_data, job.update_run_at, job.reset_counts
+                job.update_data == 'true', job.update_run_at, job.reset_counts == 'true'
             )
         end
     else
@@ -191,21 +181,15 @@ local function dequeue(waiting_key, active_key, worker_id, now, expiry, limit)
 
     for _, id in ipairs(jobs) do
         local removed = redis.call('ZREM', waiting_key, id)
+        local waiting_job_key = get_job_key(waiting_key, id)
+        local active_job_key = get_job_key(active_key, id)
 
-        if removed == 1 then
-            local waiting_job_key = get_job_key(waiting_key, id)
-            local active_job_key = get_job_key(active_key, id)
+        local renamed = redis.call('RENAME', waiting_job_key, active_job_key)
+        local job = redis.call('HGETALL', active_job_key)
+        local active_item = id .. ':' .. worker_id
 
-            local renamed = redis.call('RENAME', waiting_job_key, active_job_key)
-
-            if renamed.ok == 'OK' then
-                local job = redis.call('HGETALL', active_job_key)
-                local active_item = id .. ':' .. worker_id
-
-                redis.call('ZADD', active_key, expiry, active_item)
-                table.insert(result, job)
-            end
-        end
+        redis.call('ZADD', active_key, expiry, active_item)
+        table.insert(result, job)
     end
 
     return result
@@ -256,9 +240,9 @@ redis.register_function {
         local id = args[1]
         local run_at = tonumber(args[2])
         local data = args[3]
-        local update_data = args[4]
+        local update_data = args[4] == 'true'
         local update_run_at = args[5]
-        local reset_counts = args[6]
+        local reset_counts = args[6] == 'true'
 
         redis.setresp(3)
         return dispatch(

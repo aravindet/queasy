@@ -38,15 +38,18 @@ parentPort.on('message', async (msg) => {
 		case 'exec': {
 			const { queue, job } = msg;
 			const handler = handlers.get(queue);
+			if (!handler) throw new Error(`Handler not initialized for queue: ${queue}`);
 			activeJobs.add(job.id);
 			try {
 				await handler.handle(job.data, job);
-				parentPort.postMessage({ op: 'done', jobId: job.id });
+				parentPort?.postMessage({ op: 'done', jobId: job.id });
 			} catch (err) {
 				// Serialize error as JSON object with enumerable properties
-				const errorObj = { message: err.message, name: err.name };
-				for (const key in err) {
-					errorObj[key] = err[key];
+				const error = /** @type {Error & Record<string, any>} */ (err);
+				/** @type {Record<string, any>} */
+				const errorObj = { message: error.message, name: error.name };
+				for (const key in error) {
+					errorObj[key] = error[key];
 				}
 
 				// Include custom retryAt if specified by the error
@@ -54,11 +57,11 @@ parentPort.on('message', async (msg) => {
 					op: 'done',
 					jobId: job.id,
 					error: JSON.stringify(errorObj),
-					customRetryAt: err.retryAt,
-					isPermanent: err instanceof PermanentError,
+					customRetryAt: error.retryAt,
+					isPermanent: error instanceof PermanentError,
 				};
 
-				parentPort.postMessage(done);
+				parentPort?.postMessage(done);
 			} finally {
 				activeJobs.delete(job.id);
 			}

@@ -4,45 +4,23 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 
+import {
+	DEFAULT_RETRY_OPTIONS,
+	DEQUEUE_INTERVAL,
+	HEARTBEAT_TIMEOUT,
+	WORKER_CAPACITY,
+} from './constants.js';
+
 // Import types:
 /** @typedef {import('redis').RedisClientType} RedisClient */
-/** @typedef {import('./types.js').DefaultJobOptions} DefaultJobOptions */
-/** @typedef {import('./types.js').JobOptions} JobOptions */
-/** @typedef {import('./types.js').Job} Job */
-/** @typedef {import('./types.js').ParentToWorkerMessage} ParentToWorkerMessage */
-/** @typedef {import('./types.js').WorkerToParentMessage} WorkerToParentMessage */
+/** @typedef {import('./types').JobRetryOptions} JobRetryOptions */
+/** @typedef {import('./types').Job} Job */
+/** @typedef {import('./types').ParentToWorkerMessage} ParentToWorkerMessage */
+/** @typedef {import('./types').WorkerToParentMessage} WorkerToParentMessage */
+/** @typedef {import('./types').DoneMessage} DoneMessage */
 
 // Types used only in this file
 /** @typedef {{worker: Worker, jobIds: Set<string>, id: string}} WorkerEntry */
-
-/** @type {Required<DefaultJobOptions>} */
-const DEFAULT_JOB_OPTIONS = {
-	maxRetries: 10,
-	maxStalls: 3,
-	minBackoff: 2_000,
-	maxBackoff: 300_000, // 5 minutes
-	updateData: true,
-	updateRunAt: true,
-	updateRetryStrategy: false,
-	resetCounts: false,
-};
-
-/** @type {Required<DefaultJobOptions>} */
-const DEFAULT_FAILJOB_OPTIONS = {
-	maxRetries: 100,
-	maxStalls: 3,
-	minBackoff: 10_000,
-	maxBackoff: 900_000, // 15 minutes
-	updateData: true,
-	updateRunAt: true,
-	updateRetryStrategy: false,
-	resetCounts: false,
-};
-
-const HEARTBEAT_INTERVAL = 5000; // 5 seconds
-const WORKER_CAPACITY = 10;
-const DEQUEUE_INTERVAL = 100; // ms
-const HEARTBEAT_TIMEOUT = 10000; // 10 seconds
 
 // Load Lua script
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -56,6 +34,9 @@ const workers = [];
 
 /** @type {Map<string, Queue>} */
 const jobMap = new Map();
+
+/** @type {Map<string, {retryCount: number, data: string}>} */
+const jobMetadata = new Map();
 
 /** @type {Set<Queue>} */
 const allQueues = new Set();
@@ -99,6 +80,9 @@ async function done(workerEntry, msg) {
 	jobMap.delete(msg.jobId);
 
 	await queue.done(msg.jobId, workerEntry.id, msg.error, msg.customRetryAt, msg.isPermanent);
+
+	// Clean up job metadata after done is called
+	jobMetadata.delete(msg.jobId);
 }
 
 /**
@@ -242,11 +226,12 @@ class Queue {
 			try {
 				const now = String(Date.now());
 				const expiry = String(Date.now() + HEARTBEAT_TIMEOUT);
-				/** @type {Job} */
-				const jobs = await this.redis.fCall('queasy_dequeue', {
+				const result = await this.redis.fCall('queasy_dequeue', {
 					keys: [this.waitingKey, this.activeKey],
 					arguments: [workerEntry.id, now, expiry, String(available)],
 				});
+				/** @type {string[][]} */
+				const jobs = /** @type {string[][]} */ (result);
 
 				for (const rawJob of jobs) {
 					const job = parseJob(rawJob);
@@ -266,6 +251,20 @@ class Queue {
 						continue;
 					}
 
+					// Store job metadata for later use in done()
+					// Extract raw data string from the rawJob array
+					let rawData = '{}';
+					for (let i = 0; i < rawJob.length; i += 2) {
+						if (rawJob[i] === 'data') {
+							rawData = rawJob[i + 1] || '{}';
+							break;
+						}
+					}
+					jobMetadata.set(job.id, {
+						retryCount: job.retryCount,
+						data: rawData,
+					});
+
 					// Add retry options to job for worker
 					const jobWithOptions = { ...job, ...this.retryOptions };
 
@@ -275,7 +274,8 @@ class Queue {
 				}
 			} catch (err) {
 				// Redis client may be closed during tests or shutdown - ignore these errors
-				if (err.message?.includes('closed')) {
+				const error = /** @type {Error} */ (err);
+				if (error.message?.includes('closed')) {
 					return;
 				}
 				throw err;
@@ -286,31 +286,17 @@ class Queue {
 	/**
 	 * Attach handlers to process jobs from this queue
 	 * @param {string} handlerPath - Path to handler module
-	 * @param {Partial<import('./types.js').ListenOptions>} [options] - Retry strategy options
+	 * @param {import('./types').ListenOptions} [options] - Retry strategy options and failure handler
 	 * @returns {Promise<void>}
 	 */
 	async listen(handlerPath, options = {}) {
 		await this.ensureRedisInitialized();
 		ensureWorkerPool();
 
-		// Check if handler exports a failure handler
-		const { pathToFileURL } = await import('node:url');
-		const handlerModule = await import(pathToFileURL(handlerPath).href);
-		this.hasFailureHandler = typeof handlerModule.handleFailure === 'function';
-
 		// Store retry options with defaults
-		this.retryOptions = {
-			maxRetries: options.maxRetries ?? DEFAULT_JOB_OPTIONS.maxRetries,
-			maxStalls: options.maxStalls ?? DEFAULT_JOB_OPTIONS.maxStalls,
-			minBackoff: options.minBackoff ?? DEFAULT_JOB_OPTIONS.minBackoff,
-			maxBackoff: options.maxBackoff ?? DEFAULT_JOB_OPTIONS.maxBackoff,
-		};
+		this.retryOptions = { ...DEFAULT_RETRY_OPTIONS, ...options };
 
-		// Create failure handler queue name if needed
-		if (this.hasFailureHandler) {
-			this.failQueueName = `${this.name}-fail`;
-		}
-
+		// Initialize main handler on all workers
 		for (const { worker } of workers) {
 			worker.postMessage({
 				op: 'init',
@@ -319,6 +305,20 @@ class Queue {
 				retryOptions: this.retryOptions,
 			});
 		}
+
+		// Initialize failure handler on all workers if provided
+		if (options.failHandler) {
+			this.failQueueName = `${this.name}-fail`;
+			for (const { worker } of workers) {
+				worker.postMessage({
+					op: 'init',
+					queue: this.failQueueName,
+					handler: options.failHandler,
+					retryOptions: this.retryOptions,
+				});
+			}
+		}
+
 		this.startDequeue();
 	}
 
@@ -340,10 +340,19 @@ class Queue {
 			return;
 		}
 
-		// Get job to check retry count
-		const activeJobKey = `{${this.name}}:active_job:${jobId}`;
-		const jobData = await this.redis.hGetAll(activeJobKey);
-		const retryCount = Number(jobData.retry_count || 0);
+		// Get job metadata from map instead of Redis
+		const metadata = jobMetadata.get(jobId);
+		if (!metadata) {
+			// Metadata not found - this shouldn't happen in normal flow
+			// Fall back to just finishing the job
+			await this.redis.fCall('queasy_finish', {
+				keys: [this.waitingKey, this.activeKey],
+				arguments: [jobId, workerId],
+			});
+			return;
+		}
+
+		const retryCount = metadata.retryCount;
 
 		// Determine if job should fail permanently
 		const shouldFail =
@@ -351,14 +360,14 @@ class Queue {
 
 		if (shouldFail) {
 			// Job failed permanently
-			if (this.hasFailureHandler) {
+			if (this.failQueueName) {
 				// Create fail job data
 				const failJobId = generateId();
 				const failWaitingKey = `{${this.failQueueName}}:waiting`;
 				const failActiveKey = `{${this.failQueueName}}:active`;
 
 				// Pack original job id, data, and error into array
-				const failJobData = JSON.stringify([jobId, jobData.data || '{}', error || '{}']);
+				const failJobData = JSON.stringify([jobId, metadata.data, error]);
 
 				// Call queasy_fail to dispatch fail job and finish original
 				await this.redis.fCall('queasy_fail', {
@@ -376,6 +385,8 @@ class Queue {
 		}
 
 		// Calculate retry time with exponential backoff
+		// retryOptions is guaranteed to exist here because shouldFail would be true otherwise
+		if (!this.retryOptions) return; // Type guard for TypeScript
 		const baseBackoff = this.retryOptions.minBackoff * Math.pow(2, retryCount);
 		const backoff = Math.min(this.retryOptions.maxBackoff, baseBackoff);
 		const calculatedRetryAt = Date.now() + backoff;
@@ -427,4 +438,5 @@ export function closeWorkers() {
 	}
 	workers.length = 0;
 	jobMap.clear();
+	jobMetadata.clear();
 }

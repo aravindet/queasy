@@ -249,4 +249,50 @@ describe('Queue E2E', () => {
 			if (keys1.length > 0) await redis.del(keys1);
 		});
 	});
+
+	describe('failure handlers', () => {
+		it('should process failed jobs with separate failure handler', async () => {
+			const q = queue('fail-test', redis);
+			await q.dispatch({ task: 'will-fail' });
+
+			const handlerPath = new URL('./fixtures/with-failure-handler.js', import.meta.url)
+				.pathname;
+			const failHandlerPath = new URL('./fixtures/failure-handler.js', import.meta.url)
+				.pathname;
+
+			await q.listen(handlerPath, {
+				maxRetries: 0, // Fail immediately without retries
+				failHandler: failHandlerPath,
+			});
+
+			// Wait for job to fail and fail job to be created
+			await new Promise((r) => setTimeout(r, 500));
+
+			// Fail job should exist in fail queue
+			const failJobIds = await redis.zRange('{fail-test-fail}:waiting', 0, -1);
+			assert.ok(failJobIds.length > 0, 'Fail job should be created');
+
+			// Verify fail job data structure
+			const failJobId = failJobIds[0];
+			const failJobData = await redis.hGet(
+				`{fail-test-fail}:waiting_job:${failJobId}`,
+				'data'
+			);
+			const parsedFailData = JSON.parse(failJobData);
+			assert.ok(Array.isArray(parsedFailData), 'Fail job data should be an array');
+			assert.equal(parsedFailData.length, 3, 'Fail job should have [jobId, data, error]');
+
+			// Verify the structure contains the original data
+			const originalData = JSON.parse(parsedFailData[1]);
+			assert.deepEqual(originalData, { task: 'will-fail' });
+
+			// Verify error is present
+			const error = JSON.parse(parsedFailData[2]);
+			assert.ok(error.message, 'Error should have a message');
+
+			// Cleanup
+			const keys = await redis.keys('{fail-test*}*');
+			if (keys.length > 0) await redis.del(keys);
+		});
+	});
 });
