@@ -15,7 +15,13 @@
 		"docker:down": "docker compose down",
 		"docker:logs": "docker compose logs -f"
 	},
-	"keywords": ["queue", "redis", "job", "task", "worker"],
+	"keywords": [
+		"queue",
+		"redis",
+		"job",
+		"task",
+		"worker"
+	],
 	"author": "",
 	"license": "ISC",
 	"dependencies": {

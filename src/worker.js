@@ -8,23 +8,8 @@ import { PermanentError } from './errors.js';
 
 if (!parentPort) throw new Error('Worker cannot be executed directly.');
 
-const HEARTBEAT_INTERVAL = 5000;
-
 /** @type {Map<string, { handle: Function, handleFailure?: Function, retryOptions: Required<JobRetryOptions> }>} */
 const handlers = new Map();
-const activeJobs = new Set();
-
-/** @type {null | NodeJS.Timeout} */
-let bumpInterval = null;
-
-function ensureBumpTimer() {
-	if (bumpInterval) return;
-	bumpInterval = setInterval(() => {
-		if (activeJobs.size > 0) {
-			parentPort?.postMessage({ op: 'bump' });
-		}
-	}, HEARTBEAT_INTERVAL);
-}
 
 /** @param {ParentToWorkerMessage} msg */
 parentPort.on('message', async (msg) => {
@@ -32,14 +17,12 @@ parentPort.on('message', async (msg) => {
 		case 'init': {
 			const mod = await import(pathToFileURL(msg.handler).href);
 			handlers.set(msg.queue, { ...mod, retryOptions: msg.retryOptions });
-			ensureBumpTimer();
 			break;
 		}
 		case 'exec': {
 			const { queue, job } = msg;
 			const handler = handlers.get(queue);
 			if (!handler) throw new Error(`Handler not initialized for queue: ${queue}`);
-			activeJobs.add(job.id);
 			try {
 				await handler.handle(job.data, job);
 				parentPort?.postMessage({ op: 'done', jobId: job.id });
@@ -62,8 +45,6 @@ parentPort.on('message', async (msg) => {
 				};
 
 				parentPort?.postMessage(done);
-			} finally {
-				activeJobs.delete(job.id);
 			}
 			break;
 		}

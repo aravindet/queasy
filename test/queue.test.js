@@ -1,7 +1,7 @@
-import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
+import { afterEach, beforeEach, describe, it } from 'node:test';
 import { createClient } from 'redis';
-import { queue, closeWorkers } from '../src/index.js';
+import { closeWorkers, queue } from '../src/index.js';
 
 const QUEUE_NAME = 'test';
 
@@ -42,9 +42,9 @@ describe('Queue E2E', () => {
 	async function waitForJobCompletion(jobId, timeoutMs = 3000, queueName = QUEUE_NAME) {
 		const deadline = Date.now() + timeoutMs;
 		while (Date.now() < deadline) {
-			const waiting = await redis.zScore(`{${queueName}}:waiting`, jobId);
-			const activeKeys = await redis.keys(`{${queueName}}:active*`);
-			if (waiting === null && activeKeys.length === 0) {
+			const waiting = await redis.zScore(`{${queueName}}`, jobId);
+			const activeJobExists = await redis.exists(`{${queueName}}:active_job:${jobId}`);
+			if (waiting === null && activeJobExists === 0) {
 				return true;
 			}
 			await new Promise((r) => setTimeout(r, 50));
@@ -61,7 +61,7 @@ describe('Queue E2E', () => {
 			assert.equal(typeof jobId, 'string');
 
 			// Job should be in waiting queue
-			const score = await redis.zScore(`{${QUEUE_NAME}}:waiting`, jobId);
+			const score = await redis.zScore(`{${QUEUE_NAME}}`, jobId);
 			assert.ok(score !== null);
 
 			// Job data should exist
@@ -77,7 +77,7 @@ describe('Queue E2E', () => {
 
 			assert.equal(jobId, customId);
 
-			const score = await redis.zScore(`{${QUEUE_NAME}}:waiting`, customId);
+			const score = await redis.zScore(`{${QUEUE_NAME}}`, customId);
 			assert.ok(score !== null);
 		});
 
@@ -86,7 +86,7 @@ describe('Queue E2E', () => {
 			const futureTime = Date.now() + 10000;
 			const jobId = await q.dispatch({ task: 'future' }, { runAt: futureTime });
 
-			const score = await redis.zScore(`{${QUEUE_NAME}}:waiting`, jobId);
+			const score = await redis.zScore(`{${QUEUE_NAME}}`, jobId);
 			assert.equal(score, futureTime);
 		});
 
@@ -122,7 +122,7 @@ describe('Queue E2E', () => {
 			assert.equal(cancelled, true);
 
 			// Job should be removed
-			const score = await redis.zScore(`{${QUEUE_NAME}}:waiting`, jobId);
+			const score = await redis.zScore(`{${QUEUE_NAME}}`, jobId);
 			assert.equal(score, null);
 
 			const exists = await redis.exists(`{${QUEUE_NAME}}:waiting_job:${jobId}`);
@@ -148,11 +148,11 @@ describe('Queue E2E', () => {
 			assert.ok(completed, 'Job should complete within timeout');
 
 			// Job should be removed from all queues
-			const waitingScore = await redis.zScore(`{${QUEUE_NAME}}:waiting`, jobId);
+			const waitingScore = await redis.zScore(`{${QUEUE_NAME}}`, jobId);
 			assert.equal(waitingScore, null);
 
-			const activeKeys = await redis.keys(`{${QUEUE_NAME}}:active*`);
-			assert.equal(activeKeys.length, 0);
+			const activeJobExists = await redis.exists(`{${QUEUE_NAME}}:active_job:${jobId}`);
+			assert.equal(activeJobExists, 0);
 		});
 
 		it('should process multiple jobs', async () => {
@@ -168,14 +168,17 @@ describe('Queue E2E', () => {
 
 			// Wait for all jobs to complete
 			const results = await Promise.all(jobIds.map((id) => waitForJobCompletion(id)));
-			assert.ok(results.every((r) => r === true), 'All jobs should complete');
+			assert.ok(
+				results.every((r) => r === true),
+				'All jobs should complete'
+			);
 
 			// All jobs should be cleaned up
-			const waitingJobs = await redis.zRange(`{${QUEUE_NAME}}:waiting`, 0, -1);
+			const waitingJobs = await redis.zRange(`{${QUEUE_NAME}}`, 0, -1);
 			assert.equal(waitingJobs.length, 0);
 
-			const activeKeys = await redis.keys(`{${QUEUE_NAME}}:active*`);
-			assert.equal(activeKeys.length, 0);
+			const activeJobKeys = await redis.keys(`{${QUEUE_NAME}}:active_job:*`);
+			assert.equal(activeJobKeys.length, 0);
 		});
 
 		it('should not process jobs scheduled for the future', async () => {
@@ -190,7 +193,7 @@ describe('Queue E2E', () => {
 			await new Promise((r) => setTimeout(r, 500));
 
 			// Job should still be waiting
-			const score = await redis.zScore(`{${QUEUE_NAME}}:waiting`, jobId);
+			const score = await redis.zScore(`{${QUEUE_NAME}}`, jobId);
 			assert.ok(score !== null);
 			assert.equal(score, futureTime);
 		});
@@ -212,7 +215,7 @@ describe('Queue E2E', () => {
 			assert.ok(job2Completed);
 
 			// job1 should not exist
-			const job1Score = await redis.zScore(`{${QUEUE_NAME}}:waiting`, jobId1);
+			const job1Score = await redis.zScore(`{${QUEUE_NAME}}`, jobId1);
 			assert.equal(job1Score, null);
 
 			const job1Exists = await redis.exists(`{${QUEUE_NAME}}:waiting_job:${jobId1}`);
@@ -255,10 +258,8 @@ describe('Queue E2E', () => {
 			const q = queue('fail-test', redis);
 			await q.dispatch({ task: 'will-fail' });
 
-			const handlerPath = new URL('./fixtures/with-failure-handler.js', import.meta.url)
-				.pathname;
-			const failHandlerPath = new URL('./fixtures/failure-handler.js', import.meta.url)
-				.pathname;
+			const handlerPath = new URL('./fixtures/with-failure-handler.js', import.meta.url).pathname;
+			const failHandlerPath = new URL('./fixtures/failure-handler.js', import.meta.url).pathname;
 
 			await q.listen(handlerPath, {
 				maxRetries: 0, // Fail immediately without retries
@@ -269,15 +270,12 @@ describe('Queue E2E', () => {
 			await new Promise((r) => setTimeout(r, 500));
 
 			// Fail job should exist in fail queue
-			const failJobIds = await redis.zRange('{fail-test-fail}:waiting', 0, -1);
+			const failJobIds = await redis.zRange('{fail-test-fail}', 0, -1);
 			assert.ok(failJobIds.length > 0, 'Fail job should be created');
 
 			// Verify fail job data structure
 			const failJobId = failJobIds[0];
-			const failJobData = await redis.hGet(
-				`{fail-test-fail}:waiting_job:${failJobId}`,
-				'data'
-			);
+			const failJobData = await redis.hGet(`{fail-test-fail}:waiting_job:${failJobId}`, 'data');
 			const parsedFailData = JSON.parse(failJobData);
 			assert.ok(Array.isArray(parsedFailData), 'Fail job data should be an array');
 			assert.equal(parsedFailData.length, 3, 'Fail job should have [jobId, data, error]');

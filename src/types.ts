@@ -81,10 +81,6 @@ export type ExecMessage = {
 	job: Job;
 };
 
-export type BumpMessage = {
-	op: 'bump';
-};
-
 export type DoneMessage = {
 	op: 'done';
 	jobId: string;
@@ -94,4 +90,4 @@ export type DoneMessage = {
 };
 
 export type ParentToWorkerMessage = InitMessage | ExecMessage;
-export type WorkerToParentMessage = BumpMessage | DoneMessage;
+export type WorkerToParentMessage = DoneMessage;

@@ -7,7 +7,7 @@ import { Worker } from 'node:worker_threads';
 import {
 	DEFAULT_RETRY_OPTIONS,
 	DEQUEUE_INTERVAL,
-	HEARTBEAT_TIMEOUT,
+	HEARTBEAT_INTERVAL,
 	WORKER_CAPACITY,
 } from './constants.js';
 
@@ -57,14 +57,7 @@ function ensureWorkerPool() {
  * @param {WorkerToParentMessage} msg
  */
 async function handleWorkerMessage(workerEntry, msg) {
-	switch (msg.op) {
-		case 'bump':
-			await bump(workerEntry);
-			break;
-		case 'done':
-			await done(workerEntry, msg);
-			break;
-	}
+	await done(workerEntry, msg);
 }
 
 /**
@@ -79,26 +72,10 @@ async function done(workerEntry, msg) {
 	workerEntry.jobIds.delete(msg.jobId);
 	jobMap.delete(msg.jobId);
 
-	await queue.done(msg.jobId, workerEntry.id, msg.error, msg.customRetryAt, msg.isPermanent);
+	await queue.done(msg.jobId, msg.error, msg.customRetryAt, msg.isPermanent);
 
 	// Clean up job metadata after done is called
 	jobMetadata.delete(msg.jobId);
-}
-
-/**
- * Send heartbeat bump to Redis for every active job on this worker
- * @param {WorkerEntry} workerEntry
- */
-async function bump(workerEntry) {
-	const expiry = String(Date.now() + HEARTBEAT_TIMEOUT);
-	for (const jobId of workerEntry.jobIds) {
-		const queue = jobMap.get(jobId);
-		if (!queue) continue;
-		await queue.redis.fCall('queasy_bump', {
-			keys: [queue.activeKey],
-			arguments: [jobId, workerEntry.id, expiry],
-		});
-	}
 }
 
 /**
@@ -140,6 +117,9 @@ function parseJob(jobArray) {
 	};
 }
 
+// This client (process) has an ID:
+const clientId = generateId();
+
 /**
  * Queue instance for managing a named job queue
  */
@@ -151,11 +131,12 @@ class Queue {
 	constructor(name, redis) {
 		this.name = name;
 		this.redis = redis;
-		this.waitingKey = `{${name}}:waiting`;
-		this.activeKey = `{${name}}:active`;
+		this.queueKey = `{${name}}`;
 		this.dequeueStarted = false;
 		this.dequeueInterval = null;
 		this.retryOptions = null;
+		/** @type {NodeJS.Timeout | null} */
+		this.bumpTimer = null;
 		allQueues.add(this);
 	}
 
@@ -164,6 +145,31 @@ class Queue {
 			await this.redis.sendCommand(['FUNCTION', 'LOAD', 'REPLACE', luaScript]);
 			initializedClients.add(this.redis);
 		}
+	}
+
+	/**
+	 * Schedule the next bump timer
+	 */
+	scheduleBump() {
+		if (this.bumpTimer) clearTimeout(this.bumpTimer);
+		this.bumpTimer = setTimeout(() => this.bump(), HEARTBEAT_INTERVAL);
+	}
+
+	/**
+	 * Send heartbeat bump to Redis for this client
+	 */
+	async bump() {
+		try {
+			await this.redis.fCall('queasy_bump', {
+				keys: [this.queueKey],
+				arguments: [clientId, String(Date.now())],
+			});
+		} catch (err) {
+			const error = /** @type {Error} */ (err);
+			if (error.message?.includes('closed')) return;
+			throw err;
+		}
+		this.scheduleBump();
 	}
 
 	/**
@@ -182,7 +188,7 @@ class Queue {
 		const resetCounts = options.resetCounts ?? false;
 
 		await this.redis.fCall('queasy_dispatch', {
-			keys: [this.waitingKey, this.activeKey],
+			keys: [this.queueKey],
 			arguments: [
 				id,
 				String(runAt),
@@ -205,7 +211,7 @@ class Queue {
 		await this.ensureRedisInitialized();
 
 		const result = await this.redis.fCall('queasy_cancel', {
-			keys: [this.waitingKey],
+			keys: [this.queueKey],
 			arguments: [id],
 		});
 
@@ -225,10 +231,9 @@ class Queue {
 
 			try {
 				const now = String(Date.now());
-				const expiry = String(Date.now() + HEARTBEAT_TIMEOUT);
 				const result = await this.redis.fCall('queasy_dequeue', {
-					keys: [this.waitingKey, this.activeKey],
-					arguments: [workerEntry.id, now, expiry, String(available)],
+					keys: [this.queueKey],
+					arguments: [clientId, now, String(available)],
 				});
 				/** @type {string[][]} */
 				const jobs = /** @type {string[][]} */ (result);
@@ -240,14 +245,25 @@ class Queue {
 					// Check if job has exceeded stall limit
 					if (this.retryOptions && job.stallCount >= this.retryOptions.maxStalls) {
 						// Job has stalled too many times - fail it permanently
-						await this.redis.fCall('queasy_fail', {
-							keys: [this.waitingKey, this.activeKey],
-							arguments: [
+						const now = String(Date.now());
+						if (this.failQueueName) {
+							const failJobId = generateId();
+							const failQueueKey = `{${this.failQueueName}}`;
+							const failJobData = JSON.stringify([
 								job.id,
-								workerEntry.id,
+								'{}',
 								JSON.stringify({ message: 'Max stalls exceeded' }),
-							],
-						});
+							]);
+							await this.redis.fCall('queasy_fail', {
+								keys: [this.queueKey, failQueueKey],
+								arguments: [job.id, clientId, failJobId, failJobData, now],
+							});
+						} else {
+							await this.redis.fCall('queasy_finish', {
+								keys: [this.queueKey],
+								arguments: [job.id, clientId, now],
+							});
+						}
 						continue;
 					}
 
@@ -271,6 +287,10 @@ class Queue {
 					workerEntry.jobIds.add(job.id);
 					jobMap.set(job.id, this);
 					workerEntry.worker.postMessage({ op: 'exec', queue: this.name, job: jobWithOptions });
+				}
+
+				if (jobs.length > 0) {
+					this.scheduleBump();
 				}
 			} catch (err) {
 				// Redis client may be closed during tests or shutdown - ignore these errors
@@ -325,18 +345,20 @@ class Queue {
 	/**
 	 * Handle job completion - calls finish, retry, or fail based on outcome
 	 * @param {string} jobId - Job ID
-	 * @param {string} workerId - Worker ID
 	 * @param {string} [error] - Error message (JSON-serialized)
 	 * @param {number} [customRetryAt] - Custom retry timestamp from error
 	 * @param {boolean} [isPermanent] - Whether error is permanent
 	 */
-	async done(jobId, workerId, error, customRetryAt, isPermanent) {
+	async done(jobId, error, customRetryAt, isPermanent) {
+		const now = String(Date.now());
+
 		if (!error) {
 			// Success: call finish
 			await this.redis.fCall('queasy_finish', {
-				keys: [this.waitingKey, this.activeKey],
-				arguments: [jobId, workerId],
+				keys: [this.queueKey],
+				arguments: [jobId, clientId, now],
 			});
+			this.scheduleBump();
 			return;
 		}
 
@@ -346,9 +368,10 @@ class Queue {
 			// Metadata not found - this shouldn't happen in normal flow
 			// Fall back to just finishing the job
 			await this.redis.fCall('queasy_finish', {
-				keys: [this.waitingKey, this.activeKey],
-				arguments: [jobId, workerId],
+				keys: [this.queueKey],
+				arguments: [jobId, clientId, now],
 			});
+			this.scheduleBump();
 			return;
 		}
 
@@ -363,50 +386,55 @@ class Queue {
 			if (this.failQueueName) {
 				// Create fail job data
 				const failJobId = generateId();
-				const failWaitingKey = `{${this.failQueueName}}:waiting`;
-				const failActiveKey = `{${this.failQueueName}}:active`;
+				const failQueueKey = `{${this.failQueueName}}`;
 
 				// Pack original job id, data, and error into array
 				const failJobData = JSON.stringify([jobId, metadata.data, error]);
 
 				// Call queasy_fail to dispatch fail job and finish original
 				await this.redis.fCall('queasy_fail', {
-					keys: [this.waitingKey, this.activeKey, failWaitingKey, failActiveKey],
-					arguments: [jobId, workerId, failJobId, failJobData],
+					keys: [this.queueKey, failQueueKey],
+					arguments: [jobId, clientId, failJobId, failJobData, now],
 				});
 			} else {
 				// No failure handler - just finish the job
 				await this.redis.fCall('queasy_finish', {
-					keys: [this.waitingKey, this.activeKey],
-					arguments: [jobId, workerId],
+					keys: [this.queueKey],
+					arguments: [jobId, clientId, now],
 				});
 			}
+			this.scheduleBump();
 			return;
 		}
 
 		// Calculate retry time with exponential backoff
 		// retryOptions is guaranteed to exist here because shouldFail would be true otherwise
 		if (!this.retryOptions) return; // Type guard for TypeScript
-		const baseBackoff = this.retryOptions.minBackoff * Math.pow(2, retryCount);
+		const baseBackoff = this.retryOptions.minBackoff * 2 ** retryCount;
 		const backoff = Math.min(this.retryOptions.maxBackoff, baseBackoff);
 		const calculatedRetryAt = Date.now() + backoff;
 		const retryAt = Math.max(customRetryAt ?? 0, calculatedRetryAt);
 
 		// Retriable error: call retry
 		await this.redis.fCall('queasy_retry', {
-			keys: [this.waitingKey, this.activeKey],
-			arguments: [jobId, workerId, String(retryAt), error],
+			keys: [this.queueKey],
+			arguments: [jobId, clientId, String(retryAt), error, now],
 		});
+		this.scheduleBump();
 	}
 
 	/**
-	 * Stop the dequeue interval for this queue
+	 * Stop the dequeue interval and bump timer for this queue
 	 */
 	close() {
 		if (this.dequeueInterval) {
 			clearInterval(this.dequeueInterval);
 			this.dequeueInterval = null;
 			this.dequeueStarted = false;
+		}
+		if (this.bumpTimer) {
+			clearTimeout(this.bumpTimer);
+			this.bumpTimer = null;
 		}
 	}
 }

@@ -4,51 +4,60 @@
 Queasy: Redis Lua functions for job queue management
 
 Key structure:
-- {queue}:waiting - sorted set of waiting job IDs (score = run_at or -run_at if blocked)
-- {queue}:active - sorted set of active jobs (member = {id}:{worker_id}, score = heartbeat deadline)
+- {queue} - sorted set of waiting job IDs (score = run_at or -run_at if blocked)
+- {queue}:expiry - sorted set of client heartbeat expiries (member = client_id, score = expiry)
+- {queue}:checkouts:{client_id} - set of job IDs checked out by this client
 - {queue}:waiting_job:{id} - hash with job data for waiting jobs
 - {queue}:active_job:{id} - hash with job data for active jobs
 ]]
 
 -- Constants
-local SWEEP_BATCH_SIZE = 100
+local HEARTBEAT_TIMEOUT = 10000
 
--- Helper: Generate job key from queue key and id
-local function get_job_key(queue_key, id)
-    return queue_key .. '_job:' .. id
+-- Key helpers
+local function get_waiting_job_key(queue_key, id)
+    return queue_key .. ':waiting_job:' .. id
+end
+
+local function get_active_job_key(queue_key, id)
+    return queue_key .. ':active_job:' .. id
+end
+
+local function get_expiry_key(queue_key)
+    return queue_key .. ':expiry'
+end
+
+local function get_checkouts_key(queue_key, client_id)
+    return queue_key .. ':checkouts:' .. client_id
 end
 
 -- Helper: Add job to waiting queue with appropriate flags
-local function add_to_waiting(waiting_key, id, score, update_run_at)
-    score = tonumber(score)
+local function add_to_waiting(queue_key, id, score, update_run_at)
+    local flag = nil
 
     if update_run_at == 'false' then
-        redis.call('ZADD', waiting_key, 'NX', score, id)
-    elseif update_run_at == 'true' then
-        redis.call('ZADD', waiting_key, score, id)
+        flag = 'NX'
     elseif update_run_at == 'if_later' then
-        if score >= 0 then
-            redis.call('ZADD', waiting_key, 'GT', score, id)
-        else
-            redis.call('ZADD', waiting_key, 'LT', score, id)
-        end
+        flag = score >= 0 and 'GT' or 'LT'
     elseif update_run_at == 'if_earlier' then
-        if score >= 0 then
-            redis.call('ZADD', waiting_key, 'LT', score, id)
-        else
-            redis.call('ZADD', waiting_key, 'GT', score, id)
-        end
+        flag = score >= 0 and 'LT' or 'GT'
+    end
+
+    if flag then
+        redis.call('ZADD', queue_key, flag, score, id)
+    else
+        redis.call('ZADD', queue_key, score, id)
     end
 end
 
 -- Helper: Upsert job to waiting queue
 local function dispatch(
-    waiting_key, active_key,
+    queue_key,
     id, run_at, data,
     update_data, update_run_at, reset_counts
 )
-    local waiting_job_key = get_job_key(waiting_key, id)
-    local active_job_key = get_job_key(active_key, id)
+    local waiting_job_key = get_waiting_job_key(queue_key, id)
+    local active_job_key = get_active_job_key(queue_key, id)
 
     -- id is always stored so that HGETALL (e.g. during dequeue) includes it
     redis.call('HSET', waiting_job_key, 'id', id)
@@ -73,17 +82,17 @@ local function dispatch(
     end
 
     -- Add to waiting queue
-    add_to_waiting(waiting_key, id, score, update_run_at)
+    add_to_waiting(queue_key, id, score, update_run_at)
 
     return { ok = 'OK' }
 end
 
 -- Helper: Move job back to waiting for retry
-local function do_retry(waiting_key, active_key, id, retry_at)
-    local waiting_job_key = get_job_key(waiting_key, id)
-    local active_job_key = get_job_key(active_key, id)
+local function do_retry(queue_key, id, retry_at)
+    local waiting_job_key = get_waiting_job_key(queue_key, id)
+    local active_job_key = get_active_job_key(queue_key, id)
 
-    local existing_score = redis.call('ZSCORE', waiting_key, id)
+    local existing_score = redis.call('ZSCORE', queue_key, id)
 
     if existing_score then
         local run_at = -existing_score.double
@@ -91,33 +100,36 @@ local function do_retry(waiting_key, active_key, id, retry_at)
 
         redis.call('DEL', waiting_job_key)
         redis.call('RENAME', active_job_key, waiting_job_key)
-        redis.call('ZADD', waiting_key, retry_at, id)
+        redis.call('ZADD', queue_key, retry_at, id)
 
         if next(job) then
             dispatch(
-                waiting_key, active_key,
+                queue_key,
                 id, run_at, job.data,
                 job.update_data == 'true', job.update_run_at, job.reset_counts == 'true'
             )
         end
     else
         redis.call('RENAME', active_job_key, waiting_job_key)
-        redis.call('ZADD', waiting_key, retry_at, id)
+        redis.call('ZADD', queue_key, retry_at, id)
     end
 
     return { ok = 'OK' }
 end
 
--- Helper: Clear active job and unblock waiting job
-local function finish(waiting_key, active_key, id, worker_id)
-    local waiting_job_key = get_job_key(waiting_key, id)
-    local active_job_key = get_job_key(active_key, id)
-    local active_item = id .. ':' .. worker_id
+-- Forward declaration
+local sweep
 
-    redis.call('ZREM', active_key, active_item)
+-- Helper: Clear active job and unblock waiting job
+local function finish(queue_key, id, client_id, now)
+    local waiting_job_key = get_waiting_job_key(queue_key, id)
+    local active_job_key = get_active_job_key(queue_key, id)
+    local checkouts_key = get_checkouts_key(queue_key, client_id)
+
+    redis.call('SREM', checkouts_key, id)
     redis.call('DEL', active_job_key)
 
-    local score = redis.call('ZSCORE', waiting_key, id)
+    local score = redis.call('ZSCORE', queue_key, id)
 
     if score then
         score = tonumber(score.double)
@@ -126,107 +138,152 @@ local function finish(waiting_key, active_key, id, worker_id)
         end
 
         local update_run_at = redis.call('HGET', waiting_job_key, 'update_run_at') or 'true'
-        add_to_waiting(waiting_key, id, score, update_run_at)
+        add_to_waiting(queue_key, id, score, update_run_at)
     end
+
+    -- Update heartbeat and sweep
+    local expiry_key = get_expiry_key(queue_key)
+    redis.call('ZADD', expiry_key, 'XX', now + HEARTBEAT_TIMEOUT, client_id)
+    sweep(queue_key, now)
 
     return { ok = 'OK' }
 end
 
 -- Helper: Handle permanent failure
 -- Creates a fail job and finishes the original job
-local function fail(waiting_key, active_key, fail_waiting_key, fail_active_key, id, worker_id, fail_job_id, fail_job_data)
+local function fail(queue_key, fail_queue_key, id, client_id, fail_job_id, fail_job_data, now)
     -- Dispatch the fail job
-    dispatch(fail_waiting_key, fail_active_key,
+    dispatch(fail_queue_key,
         fail_job_id, 0, fail_job_data,
         'false', 'false', 'false')
 
     -- Finish the original job
-    finish(waiting_key, active_key, id, worker_id)
+    finish(queue_key, id, client_id, now)
 
     return { ok = 'OK' }
 end
 
 -- Helper: Handle retriable failure
-local function retry(waiting_key, active_key, id, worker_id, retry_at, error)
-    local active_job_key = get_job_key(active_key, id)
-    local active_item = id .. ':' .. worker_id
-    redis.call('ZREM', active_key, active_item)
+local function retry(queue_key, id, client_id, retry_at, error, now)
+    local active_job_key = get_active_job_key(queue_key, id)
+    local checkouts_key = get_checkouts_key(queue_key, client_id)
+
+    redis.call('SREM', checkouts_key, id)
 
     local retry_count = tonumber(redis.call('HGET', active_job_key, 'retry_count'))
 
     retry_count = retry_count + 1
     redis.call('HSET', active_job_key, 'retry_count', retry_count)
 
-    return do_retry(waiting_key, active_key, id, retry_at)
+    local result = do_retry(queue_key, id, retry_at)
+
+    -- Update heartbeat and sweep
+    local expiry_key = get_expiry_key(queue_key)
+    redis.call('ZADD', expiry_key, 'XX', now + HEARTBEAT_TIMEOUT, client_id)
+    sweep(queue_key, now)
+
+    return result
 end
 
 -- Helper: Handle stalled job
-local function handle_stall(waiting_key, active_key, id, worker_id, retry_at)
-    local active_job_key = get_job_key(active_key, id)
-    local active_item = id .. ':' .. worker_id
-    redis.call('ZREM', active_key, active_item)
+local function handle_stall(queue_key, id, retry_at)
+    local active_job_key = get_active_job_key(queue_key, id)
 
     local stall_count = tonumber(redis.call('HGET', active_job_key, 'stall_count'))
 
     stall_count = stall_count + 1
     redis.call('HSET', active_job_key, 'stall_count', stall_count)
 
-    return do_retry(waiting_key, active_key, id, retry_at)
+    return do_retry(queue_key, id, retry_at)
 end
 
 -- Dequeue jobs from waiting queue
-local function dequeue(waiting_key, active_key, worker_id, now, expiry, limit)
-    local jobs = redis.call('ZRANGEBYSCORE', waiting_key, 0, now, 'LIMIT', 0, limit)
+local function dequeue(queue_key, client_id, now, limit)
+    local expiry = now + HEARTBEAT_TIMEOUT
+    local expiry_key = get_expiry_key(queue_key)
+    local checkouts_key = get_checkouts_key(queue_key, client_id)
+    local jobs = redis.call('ZRANGEBYSCORE', queue_key, 0, now, 'LIMIT', 0, limit)
     local result = {}
 
     for _, id in ipairs(jobs) do
-        local removed = redis.call('ZREM', waiting_key, id)
-        local waiting_job_key = get_job_key(waiting_key, id)
-        local active_job_key = get_job_key(active_key, id)
+        redis.call('ZREM', queue_key, id)
+        local waiting_job_key = get_waiting_job_key(queue_key, id)
+        local active_job_key = get_active_job_key(queue_key, id)
 
-        local renamed = redis.call('RENAME', waiting_job_key, active_job_key)
+        redis.call('RENAME', waiting_job_key, active_job_key)
         local job = redis.call('HGETALL', active_job_key)
-        local active_item = id .. ':' .. worker_id
 
-        redis.call('ZADD', active_key, expiry, active_item)
+        redis.call('SADD', checkouts_key, id)
         table.insert(result, job)
     end
+
+    if #result > 0 then
+        redis.call('ZADD', expiry_key, expiry, client_id)
+    end
+
+    -- Sweep stalled clients
+    sweep(queue_key, now)
 
     return result
 end
 
 -- Cancel a waiting job
-local function cancel(waiting_key, id)
-    local waiting_job_key = get_job_key(waiting_key, id)
-    local removed = redis.call('ZREM', waiting_key, id)
+local function cancel(queue_key, id)
+    local waiting_job_key = get_waiting_job_key(queue_key, id)
+    local removed = redis.call('ZREM', queue_key, id)
     if removed == 1 then
         redis.call('DEL', waiting_job_key)
     end
     return removed
 end
 
--- Bump heartbeat for active job
-local function bump(active_key, id, worker_id, expiry)
-    local active_item = id .. ':' .. worker_id
-    local result = redis.call('ZADD', active_key, 'XX', expiry, active_item)
-    return result or 0
+-- Bump heartbeat for client and sweep stalled clients
+local function bump(queue_key, client_id, now)
+    local expiry_key = get_expiry_key(queue_key)
+    local expiry = now + HEARTBEAT_TIMEOUT
+
+    -- Check if this client exists in expiry set
+    local existing = redis.call('ZSCORE', expiry_key, client_id)
+    if not existing then
+        return 0
+    end
+
+    -- Update expiry
+    redis.call('ZADD', expiry_key, 'XX', expiry, client_id)
+
+    -- Sweep stalled clients
+    sweep(queue_key, now)
+
+    return 1
 end
 
--- Sweep stalled jobs
-local function sweep(waiting_key, active_key, now, retry_at)
-    local stalled_items = redis.call('ZRANGEBYSCORE', active_key, 0, now, 'LIMIT', 0, SWEEP_BATCH_SIZE)
+-- Sweep stalled clients
+sweep = function(queue_key, now)
+    local expiry_key = get_expiry_key(queue_key)
+
+    -- Find first stalled client
+    local stalled = redis.call('ZRANGEBYSCORE', expiry_key, 0, now, 'LIMIT', 0, 1)
+
+    if #stalled == 0 then
+        return {}
+    end
+
+    local stalled_client_id = stalled[1]
+    local checkouts_key = get_checkouts_key(queue_key, stalled_client_id)
+
+    -- Get all job IDs checked out by this client
+    -- RESP3 returns SMEMBERS as { set = { id1 = true, id2 = true, ... } }
+    local members_resp = redis.call('SMEMBERS', checkouts_key)
     local processed_jobs = {}
 
-    for _, member in ipairs(stalled_items) do
-        local colon_pos = member:find(':')
-        if colon_pos then
-            local id = member:sub(1, colon_pos - 1)
-            local worker_id = member:sub(colon_pos + 1)
-
-            handle_stall(waiting_key, active_key, id, worker_id, retry_at)
-            table.insert(processed_jobs, id)
-        end
+    for id, _ in pairs(members_resp['set']) do
+        handle_stall(queue_key, id, 0)
+        table.insert(processed_jobs, id)
     end
+
+    -- Clean up the stalled client
+    redis.call('ZREM', expiry_key, stalled_client_id)
+    redis.call('DEL', checkouts_key)
 
     return processed_jobs
 end
@@ -235,8 +292,7 @@ end
 redis.register_function {
     function_name = 'queasy_dispatch',
     callback = function(keys, args)
-        local waiting_key = keys[1]
-        local active_key = keys[2]
+        local queue_key = keys[1]
         local id = args[1]
         local run_at = tonumber(args[2])
         local data = args[3]
@@ -246,7 +302,7 @@ redis.register_function {
 
         redis.setresp(3)
         return dispatch(
-            waiting_key, active_key,
+            queue_key,
             id, run_at, data,
             update_data, update_run_at, reset_counts
         )
@@ -258,15 +314,13 @@ redis.register_function {
 redis.register_function {
     function_name = 'queasy_dequeue',
     callback = function(keys, args)
-        local waiting_key = keys[1]
-        local active_key = keys[2]
-        local worker_id = args[1]
+        local queue_key = keys[1]
+        local client_id = args[1]
         local now = tonumber(args[2])
-        local expiry = tonumber(args[3])
-        local limit = tonumber(args[4])
+        local limit = tonumber(args[3])
 
         redis.setresp(3)
-        return dequeue(waiting_key, active_key, worker_id, now, expiry, limit)
+        return dequeue(queue_key, client_id, now, limit)
     end,
     flags = {}
 }
@@ -275,11 +329,11 @@ redis.register_function {
 redis.register_function {
     function_name = 'queasy_cancel',
     callback = function(keys, args)
-        local waiting_key = keys[1]
+        local queue_key = keys[1]
         local id = args[1]
 
         redis.setresp(3)
-        return cancel(waiting_key, id)
+        return cancel(queue_key, id)
     end,
     flags = {}
 }
@@ -288,13 +342,12 @@ redis.register_function {
 redis.register_function {
     function_name = 'queasy_bump',
     callback = function(keys, args)
-        local active_key = keys[1]
-        local id = args[1]
-        local worker_id = args[2]
-        local expiry = tonumber(args[3])
+        local queue_key = keys[1]
+        local client_id = args[1]
+        local now = tonumber(args[2])
 
         redis.setresp(3)
-        return bump(active_key, id, worker_id, expiry)
+        return bump(queue_key, client_id, now)
     end,
     flags = {}
 }
@@ -303,13 +356,13 @@ redis.register_function {
 redis.register_function {
     function_name = 'queasy_finish',
     callback = function(keys, args)
-        local waiting_key = keys[1]
-        local active_key = keys[2]
+        local queue_key = keys[1]
         local id = args[1]
-        local worker_id = args[2]
+        local client_id = args[2]
+        local now = tonumber(args[3])
 
         redis.setresp(3)
-        return finish(waiting_key, active_key, id, worker_id)
+        return finish(queue_key, id, client_id, now)
     end,
     flags = {}
 }
@@ -318,15 +371,15 @@ redis.register_function {
 redis.register_function {
     function_name = 'queasy_retry',
     callback = function(keys, args)
-        local waiting_key = keys[1]
-        local active_key = keys[2]
+        local queue_key = keys[1]
         local id = args[1]
-        local worker_id = args[2]
+        local client_id = args[2]
         local retry_at = tonumber(args[3])
         local error = args[4]
+        local now = tonumber(args[5])
 
         redis.setresp(3)
-        return retry(waiting_key, active_key, id, worker_id, retry_at, error)
+        return retry(queue_key, id, client_id, retry_at, error, now)
     end,
     flags = {}
 }
@@ -335,32 +388,16 @@ redis.register_function {
 redis.register_function {
     function_name = 'queasy_fail',
     callback = function(keys, args)
-        local waiting_key = keys[1]
-        local active_key = keys[2]
-        local fail_waiting_key = keys[3]
-        local fail_active_key = keys[4]
+        local queue_key = keys[1]
+        local fail_queue_key = keys[2]
         local id = args[1]
-        local worker_id = args[2]
+        local client_id = args[2]
         local fail_job_id = args[3]
         local fail_job_data = args[4]
+        local now = tonumber(args[5])
 
         redis.setresp(3)
-        return fail(waiting_key, active_key, fail_waiting_key, fail_active_key, id, worker_id, fail_job_id, fail_job_data)
-    end,
-    flags = {}
-}
-
--- Register: queasy_sweep
-redis.register_function {
-    function_name = 'queasy_sweep',
-    callback = function(keys, args)
-        local waiting_key = keys[1]
-        local active_key = keys[2]
-        local now = tonumber(args[1])
-        local retry_at = tonumber(args[2])
-
-        redis.setresp(3)
-        return sweep(waiting_key, active_key, now, retry_at)
+        return fail(queue_key, fail_queue_key, id, client_id, fail_job_id, fail_job_data, now)
     end,
     flags = {}
 }
