@@ -1,35 +1,35 @@
 {
-	"name": "queasy",
-	"version": "0.1.0",
-	"description": "A simple Redis-backed queue library for Node.js",
-	"main": "src/index.js",
-	"type": "module",
-	"scripts": {
-		"test": "node --test test/**/*.test.js",
-		"test:watch": "node --test --watch",
-		"lint": "biome check .",
-		"lint:fix": "biome check --write .",
-		"format": "biome format --write .",
-		"typecheck": "tsc --noEmit -p jsconfig.json",
-		"docker:up": "docker compose up -d",
-		"docker:down": "docker compose down",
-		"docker:logs": "docker compose logs -f"
-	},
-	"keywords": [
-		"queue",
-		"redis",
-		"job",
-		"task",
-		"worker"
-	],
-	"author": "",
-	"license": "ISC",
-	"dependencies": {
-		"redis": "^5.10.0"
-	},
-	"devDependencies": {
-		"@biomejs/biome": "^2.3.14",
-		"@types/node": "^25.2.0",
-		"typescript": "^5.9.3"
-	}
+    "name": "queasy",
+    "version": "0.1.0",
+    "description": "A simple Redis-backed queue library for Node.js",
+    "main": "src/index.js",
+    "type": "module",
+    "scripts": {
+        "test": "node --test test/**/*.test.js",
+        "test:watch": "node --test --watch",
+        "lint": "biome check .",
+        "lint:fix": "biome check --write .",
+        "format": "biome format --write .",
+        "typecheck": "tsc --noEmit -p jsconfig.json",
+        "docker:up": "docker compose up -d",
+        "docker:down": "docker compose down",
+        "docker:logs": "docker compose logs -f"
+    },
+    "keywords": [
+        "queue",
+        "redis",
+        "job",
+        "task",
+        "worker"
+    ],
+    "author": "",
+    "license": "ISC",
+    "dependencies": {
+        "redis": "^5.10.0"
+    },
+    "devDependencies": {
+        "@biomejs/biome": "^2.3.14",
+        "@types/node": "^25.2.0",
+        "typescript": "^5.9.3"
+    }
 }

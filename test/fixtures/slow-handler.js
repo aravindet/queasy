@@ -4,6 +4,6 @@
  * @param {import('../../src/types.js').Job} job - Job metadata
  */
 export async function handle(data, job) {
-	const delay = data?.delay || 1000;
-	await new Promise((resolve) => setTimeout(resolve, delay));
+    const delay = data?.delay || 1000;
+    await new Promise((resolve) => setTimeout(resolve, delay));
 }

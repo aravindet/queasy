@@ -4,6 +4,6 @@
  * @param {import('../../src/types.js').Job} job - Job metadata
  */
 export async function handle(data, job) {
-	// Just succeed to process the failure
-	console.log('Failure handler called with:', data);
+    // Just succeed to process the failure
+    console.log('Failure handler called with:', data);
 }

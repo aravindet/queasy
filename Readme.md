@@ -1,9 +1,35 @@
 # Queasy 🤢
 
-A simple Redis-backed queue library for Node.js with support for:
+A Redis-backed job queue for Node.js
 
-- Calling task handlers with at-least-once semantics
-- Retrying jobs on failure, with exponential backoff 
+### Terminology
+
+A _client_ is an instance of Quesy that connects to a Redis database. A _job_ is the basic unit of work, and it is _dispatched_ into a _queue_.
+
+A _handler_ is a function that carries out some work. There are two kinds of handlers: _task handlers_, which process jobs, and _fail handlers_, which are invoked when a job fails permanently. Handlers run on _workers_, which are Node.js worker threads. By default, a Queasy client automatically creates one worker per CPU.
+
+### Job properties
+
+These properties may be specified during dispatch:
+- `id`: string; generated if unspecified. See _update semantics_ below for more information.
+- `data`: a JSON-serializable value passed to handlers
+- `runAt`: number; a unix timestamp, to delay job execution until at least that time
+- `updateRunAt`, `updateData`, `resetCounts`: 
+
+### Job lifecycle
+
+A job when first dispatched is created in the _waiting_ state, unless another job 
+
+### Updating jobs
+
+A job ID may be used to 
+
+
+The handler for each job will be invoked at least once. If it throws an error, or if the process crashes or becomes unresponsive, the task will be retried a certain number of times. 
+
+### Failure handling
+
+- If the task handler throws an error jobs on failure, with exponential backoff 
 - API for task handlers to override retry delay or signal permanent failure
 - Locking active jobs with heartbeats and retrying stalled jobs
 - Calling permanent failure handlers in case of repeated job failure or stall
@@ -19,11 +45,16 @@ This library is NOT resilient to Redis failures. If the Redis instance crashes, 
 
 ## API
 
-### `queue(name, redisConnection, defaultJobOptions, failureJobOptions)`
+### `client(redisConnection, workerCount)`
+Returns a Queasy client.
+- `redisConnection`: a node-redis connection object.
+- `workerCount`: number; Size of the worker pool. If 0, or if called in a queasy worker thread, no pool is created. Defaults to the number of CPUs. 
+
+
+### `client.queue(name, defaultJobOptions, failureJobOptions)`
 
 Returns a queue object for interacting with this named queue at the defined Redis server.
 - name is a string queue name. Redis data structures related to a queue will be placed on the same node in a Redis cluster.
-- redisConnection is a node-redis connection object.
 - defaultJobOptions are defaults for the options argument to queue.dispatch() below, except for `runAt`
 - failureJobOptions are default options for jobs used to invoke failure handlers, except for `runAt`.
 
@@ -32,10 +63,6 @@ Returns a queue object for interacting with this named queue at the defined Redi
 Adds a job to the queue. `data` may be any JSON value, which will be passed unchanged to the workers. Options may include:
 - `id`: alphanumeric string; if not provided, a unique random string is generated
 - `runAt`: number; wall clock timestamp before which this job must not be run; default: 0
-- `maxRetries`: number; default: 10
-- `maxStalls`: number; default: 3
-- `minBackoff`: number; in milliseconds; default: 2000
-- `maxBackoff`: number; default: 300_000
 
 The following options take effect if an `id` is provided, and it matches that of a job already in the queue.
 - `updateData`: boolean; whether to replace the data of any waiting job with the same ID; default: true
@@ -51,9 +78,15 @@ Removes the job with the given ID if it exists in the waiting state, no-op other
 
 Returns a promise that resolves to a boolean (true if a job with this ID existed and has been removed).
 
-### `queue.listen(handler)`
+### `queue.listen(handler, options)`
 Attaches handlers to a queue to process jobs that are added to it.
 - `handler`: The path to a JavaScript module that exports the task (and, optionally, failure) handlers
+
+The following options control retry behavior:
+- `maxRetries`: number; default: 10
+- `maxStalls`: number; default: 3
+- `minBackoff`: number; in milliseconds; default: 2000
+- `maxBackoff`: number; default: 300_000
 
 ## Handlers
 

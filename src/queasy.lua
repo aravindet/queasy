@@ -98,7 +98,6 @@ local function do_retry(queue_key, id, retry_at)
         local run_at = -existing_score.double
         local job = redis.call('HGETALL', waiting_job_key)['map']
 
-        redis.call('DEL', waiting_job_key)
         redis.call('RENAME', active_job_key, waiting_job_key)
         redis.call('ZADD', queue_key, retry_at, id)
 
@@ -164,7 +163,7 @@ local function fail(queue_key, fail_queue_key, id, client_id, fail_job_id, fail_
 end
 
 -- Helper: Handle retriable failure
-local function retry(queue_key, id, client_id, retry_at, error, now)
+local function retry(queue_key, id, client_id, retry_at, now)
     local active_job_key = get_active_job_key(queue_key, id)
     local checkouts_key = get_checkouts_key(queue_key, client_id)
 
@@ -375,11 +374,10 @@ redis.register_function {
         local id = args[1]
         local client_id = args[2]
         local retry_at = tonumber(args[3])
-        local error = args[4]
         local now = tonumber(args[5])
 
         redis.setresp(3)
-        return retry(queue_key, id, client_id, retry_at, error, now)
+        return retry(queue_key, id, client_id, retry_at, now)
     end,
     flags = {}
 }

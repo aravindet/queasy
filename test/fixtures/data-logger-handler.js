@@ -6,9 +6,9 @@
 export const receivedJobs = [];
 
 export async function handle(data, job) {
-	receivedJobs.push({ data, job });
+    receivedJobs.push({ data, job });
 }
 
 export function clearLogs() {
-	receivedJobs.length = 0;
+    receivedJobs.length = 0;
 }
