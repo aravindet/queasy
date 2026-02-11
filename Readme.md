@@ -1,62 +1,69 @@
 # Queasy 🤢
 
-A Redis-backed job queue for Node.js
+A Redis-backed job queue for Node.js, featuring (in comparison with design inspiration BullMQ):
+
+- **Singleton jobs**: Guarantees that no more than one job with a given ID is be processed at a time, without trampolines or dropping jobs (“unsafe deduplication”).
+- **Fail handlers**: Guaranteed at-least-once handlers for failed or stalled jobs, which permits reliable periodic jobs without a external scheduling or “reviver” systems.
+- **Instant config changes**: Most configuration changes take effect immediately no matter the queue length, as they apply at dequeue time.
+- **Worker threads**: Jobs are processed in worker threads, preventing main process stalling and failing health checks due to CPU-bound jobs 
+- **Capacity model**: Worker capacity flexibly shared between heterogenous queues based on priority and demand, rather than queue-specific “concurrency”.
+- **Job timeout**: Enforced by draining and terminating worker threads with timed out jobs
+- **Zombie protection**: Clients that have lost locks detect this and exit at next heartbeat
+- **Fine-grained updates**: Control over individual attributes when one job updates another with the same ID
 
 ### Terminology
 
-A _client_ is an instance of Quesy that connects to a Redis database. A _job_ is the basic unit of work, and it is _dispatched_ into a _queue_.
+A _client_ is an instance of Quesy that connects to a Redis database. A _job_ is the basic unit of work that is _dispatched_ into a _queue_.
 
-A _handler_ is a function that carries out some work. There are two kinds of handlers: _task handlers_, which process jobs, and _fail handlers_, which are invoked when a job fails permanently. Handlers run on _workers_, which are Node.js worker threads. By default, a Queasy client automatically creates one worker per CPU.
+A _handler_ is JavaScript code that performs work. There are two kinds of handlers: _task handlers_, which process jobs, and _fail handlers_, which are invoked when a job fails permanently. Handlers run on _workers_, which are Node.js worker threads. By default, a Queasy client automatically creates one worker per CPU.
 
-### Job properties
+### Job attributes
 
-These properties may be specified during dispatch:
 - `id`: string; generated if unspecified. See _update semantics_ below for more information.
 - `data`: a JSON-serializable value passed to handlers
 - `runAt`: number; a unix timestamp, to delay job execution until at least that time
-- `updateRunAt`, `updateData`, `resetCounts`: 
+- `stallCount`: number; how many times has this job caused the client or worker to stall?
+- `retryCount`: number; how many times has this job caused the handler to throw an error?
 
 ### Job lifecycle
 
-A job when first dispatched is created in the _waiting_ state, unless another job 
+1. A job when first dispatched is created in the _waiting_ state, unless there is a currently active job with the same ID. In that case, it is created in the _blocked_ state.
+2. Jobs are dequeued from the _waiting_ state and enter the _active_ state.
+3. When an active job finishes or fails permanently, it is deleted. Any blocked job with the same ID then moves to the _waiting_ state. (A new job may also be added to the separate fail queue.) 
+4. When an active job stalls or fails (with retries left), it returns to the _waiting_ state. Any blocked job with the same ID then updates this waiting job.
 
-### Updating jobs
+### Worker capacity
 
-A job ID may be used to 
+When the client is created, a pool of worker threads are created. Every worker is initialized with 100 units of _capacity_. When a handler is registered, it specifies its _size_ using the same units. When a worker starts processing a job with that handler, its capacity is decreased by this size; this is reversed when that job completes or fails.
 
+Queues are dequeued based on their priority and the ratio of available capacity to handler size.
 
-The handler for each job will be invoked at least once. If it throws an error, or if the process crashes or becomes unresponsive, the task will be retried a certain number of times. 
+### Timeout handling
 
-### Failure handling
+When a worker start processing a job, a timer is started; if the job completes or throws, the timer is cleared. If the timeout occurs, the job is marked stalled and the worker is removed from the pool so it no longer receives new jobs. A new worker is also created and added to the pool to replace it. 
 
-- If the task handler throws an error jobs on failure, with exponential backoff 
-- API for task handlers to override retry delay or signal permanent failure
-- Locking active jobs with heartbeats and retrying stalled jobs
-- Calling permanent failure handlers in case of repeated job failure or stall
-- Running jobs in threads to support CPU-bound tasks
-- Killing jobs that run too long by terminating the thread
-- Scheduled jobs
-- Cancelling scheduled jobs
-- Updating scheduled jobs
-- Singleton semantics: prevent instances of repeated jobs running concurrently
-- Dynamic concurrency based on worker CPU utilization
+The unhealthy worker (with stalled jobs) continues to run until it has *only* stalled jobs remaining. When this happens, the worker is terminated, and all its jobs are 
 
-This library is NOT resilient to Redis failures. If the Redis instance crashes, jobs may crash, multiple workers might be assigned the same job, etc. If that makes you queasy, this is not the queue library for you.
+### Stall handling
+
+The client (in the main thread) sends periodic heartbeats to Redis for each queue it’s processing. If heartbeats from a client stop, a Lua script in Redis removes this client and returns all its active jobs into the waiting state with their stall count property incremented.
+
+When a job is dequeued, if its stall count exceeds the configured maximum, it is immediately considered permanently failed and its handler is not invoked.
+
+The response of the heartbeat Lua function indicates whether the client had been removed due to an earlier stall; if it receives this response, the client terminates all its worker threads immediately and re-initializes the pool and queues.
 
 ## API
 
 ### `client(redisConnection, workerCount)`
 Returns a Queasy client.
 - `redisConnection`: a node-redis connection object.
-- `workerCount`: number; Size of the worker pool. If 0, or if called in a queasy worker thread, no pool is created. Defaults to the number of CPUs. 
+- `workerCount`: number; Size of the worker pool. If 0, or if called in a queasy worker thread, no pool is created. Defaults to the number of CPUs.
 
 
-### `client.queue(name, defaultJobOptions, failureJobOptions)`
+### `client.queue(name)`
 
 Returns a queue object for interacting with this named queue at the defined Redis server.
 - name is a string queue name. Redis data structures related to a queue will be placed on the same node in a Redis cluster.
-- defaultJobOptions are defaults for the options argument to queue.dispatch() below, except for `runAt`
-- failureJobOptions are default options for jobs used to invoke failure handlers, except for `runAt`.
 
 ### `queue.dispatch(data, options)`
 
@@ -80,20 +87,25 @@ Returns a promise that resolves to a boolean (true if a job with this ID existed
 
 ### `queue.listen(handler, options)`
 Attaches handlers to a queue to process jobs that are added to it.
-- `handler`: The path to a JavaScript module that exports the task (and, optionally, failure) handlers
+- `handler`: The path to a JavaScript module that exports the task handler
 
 The following options control retry behavior:
 - `maxRetries`: number; default: 10
 - `maxStalls`: number; default: 3
-- `minBackoff`: number; in milliseconds; default: 2000
-- `maxBackoff`: number; default: 300_000
+- `minBackoff`: number; in milliseconds; default: 2,000
+- `maxBackoff`: number; default: 300,000
+- `size`: number; default: 10
+- `timeout`: number; in milliseconds; default: 60,000
+
+Additional options affect failure handling:
+- `failHandler`: The path to a JavaScript module that exports the handler for failure jobs
+- `failRetryOptions`: Retry options (as above) for the failure jobs
 
 ## Handlers
 
-The handler module must have a named export `handle`, a function that is called with each job. It may additionally have a named export 
-`handleFailure`, which is called if the job fails permanently.
+Every handler module must have a named export `handle`, a function that is called with each job.
 
-### `handle`
+### Task handlers
 
 It receives two arguments:
 - `data`, the JSON value passed to dispatch
@@ -108,13 +120,11 @@ the exponential backoff algorithm.
 
 If it returns any value apart from a Promise that rejects, the job is considered to have completed successfully.
 
-### `handleFailure`
+### Failure handlers
 
 This function receives three arguments:
 - `data`, the JSON value passed to dispatch
 - `job`
-- `error`, a JSON object with a copy of the enumerable properties of the error thrown by the final call to handle,
-  or an instance of `StallError` if the final call to handle didn’t return or throw.
+- `error`, a JSON object with a copy of the enumerable properties of the error thrown by the final call to handle, or an instance of `StallError` if the final call to handle didn’t return or throw.
 
-If this function throws an error (or returns a Promise that rejects), it is retried using exponential backoff. It
-is expected that failure jobs are retried for a long time (e.g. days).
+If this function throws an error (or returns a Promise that rejects), it is retried using exponential backoff.

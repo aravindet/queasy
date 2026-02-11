@@ -99,7 +99,7 @@ export class Queue {
 
     async dequeue() {
         const { pool, handlerPath } = /** @type {{pool: Pool, handlerPath: string}} */ (this);
-        const { maxRetries, maxStalls, maxBackoff, minBackoff, size } =
+        const { maxRetries, maxStalls, maxBackoff, minBackoff, size, timeout } =
             /** @type {Required<DequeueOptions>} */ (this.dequeueOptions);
 
         const capacity = pool.getCapacity(size);
@@ -120,11 +120,12 @@ export class Queue {
             }
 
             try {
-                await pool.process(handlerPath, job, size);
-            } catch (error) {
-                const { retryAt = 0, isPermanent } = /** @type {DoneMessage} */ (error);
+                await pool.process(handlerPath, job, size, timeout);
+            } catch (message) {
+                const { error } = /** @type {Required<DoneMessage>} */ (message);
+                const { retryAt = 0, kind } = error;
 
-                if (isPermanent || job.retryCount >= maxRetries) {
+                if (kind === 'permanent' || job.retryCount >= maxRetries) {
                     if (!this.failKey) return this.client.finish(this.key, job.id);
 
                     const failJobData = [job.id, job.data, error];

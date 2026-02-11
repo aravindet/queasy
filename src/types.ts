@@ -25,6 +25,8 @@ export interface DequeueOptions {
     maxBackoff?: number;
     /** Size of the job (as a percent of total worker capacity) */
     size?: number;
+    /** Maximum processing duration before considering stalled */
+    timeout?: number;
 }
 
 /**
@@ -79,7 +81,10 @@ export type ExecMessage = {
 export type DoneMessage = {
     op: 'done';
     jobId: string;
-    error?: string;
-    retryAt?: number;
-    isPermanent?: boolean;
+    error?: {
+        name: string;
+        message: string;
+        retryAt?: number;
+        kind?: 'retriable' | 'permanent' | 'stall';
+    };
 };

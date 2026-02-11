@@ -25,9 +25,12 @@ parentPort.on('message', async (msg) => {
         send({
             op: 'done',
             jobId: job.id,
-            error: JSON.stringify({ message, name }),
-            retryAt: retryAt,
-            isPermanent: err instanceof PermanentError,
+            error: {
+                name,
+                message,
+                retryAt,
+                kind: err instanceof PermanentError ? 'permanent' : 'retriable',
+            },
         });
     }
 });

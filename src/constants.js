@@ -8,6 +8,7 @@ export const DEFAULT_RETRY_OPTIONS = {
     minBackoff: 2_000,
     maxBackoff: 300_000, // 5 minutes
     size: 10,
+    timeout: 60_000, // 1 minute
 };
 
 /** @type {Required<JobUpdateOptions>} */
@@ -24,6 +25,7 @@ export const FAILJOB_RETRY_OPTIONS = {
     minBackoff: 10_000,
     maxBackoff: 900_000, // 15 minutes
     size: 2,
+    timeout: 60_000,
 };
 
 export const HEARTBEAT_INTERVAL = 5000; // 5 seconds
