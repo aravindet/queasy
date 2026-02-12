@@ -19,7 +19,6 @@ import { generateId } from './utils.js';
  *      reject: (reason: DoneMessage) => void,
  *      size: number,
  *      timer: NodeJS.Timeout
- *      hasStalled: boolean
  *  }} JobEntry */
 
 export class Pool {
@@ -79,8 +78,6 @@ export class Pool {
      * @param {string} jobId
      */
     handleTimeout(workerEntry, jobId) {
-        const jobEntry = this.activeJobs.get(jobId);
-        if (jobEntry) jobEntry.hasStalled = true;
         workerEntry.stalledJobs.add(jobId);
 
         // Remove and replace this worker in the pool (if it wasn’t already).
@@ -141,7 +138,7 @@ export class Pool {
         const timer = setTimeout(() => this.handleTimeout(workerEntry, job.id), timeout);
 
         return new Promise((resolve, reject) => {
-            this.activeJobs.set(job.id, { resolve, reject, size, timer, hasStalled: false });
+            this.activeJobs.set(job.id, { resolve, reject, size, timer });
             workerEntry.capacity -= size;
             workerEntry.jobCount += 1;
             workerEntry.worker.postMessage({ op: 'exec', handlerPath, job });
@@ -155,6 +152,15 @@ export class Pool {
         for (const { worker } of this.workers) {
             worker.terminate();
         }
+
+        for (const [jobId, { reject }] of this.activeJobs.entries()) {
+            reject({
+                op: 'done',
+                jobId,
+                error: { name: 'StallError', message: 'Pool is closing', kind: 'stall' },
+            });
+        }
+
         this.workers = new Set();
         this.activeJobs.clear();
     }

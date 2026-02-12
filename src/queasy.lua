@@ -11,9 +11,6 @@ Key structure:
 - {queue}:active_job:{id} - hash with job data for active jobs
 ]]
 
--- Constants
-local HEARTBEAT_TIMEOUT = 10000
-
 -- Key helpers
 local function get_waiting_job_key(queue_key, id)
     return queue_key .. ':waiting_job:' .. id
@@ -140,11 +137,6 @@ local function finish(queue_key, id, client_id, now)
         add_to_waiting(queue_key, id, score, update_run_at)
     end
 
-    -- Update heartbeat and sweep
-    local expiry_key = get_expiry_key(queue_key)
-    redis.call('ZADD', expiry_key, 'XX', now + HEARTBEAT_TIMEOUT, client_id)
-    sweep(queue_key, now)
-
     return { ok = 'OK' }
 end
 
@@ -176,11 +168,6 @@ local function retry(queue_key, id, client_id, retry_at, now)
 
     local result = do_retry(queue_key, id, retry_at)
 
-    -- Update heartbeat and sweep
-    local expiry_key = get_expiry_key(queue_key)
-    redis.call('ZADD', expiry_key, 'XX', now + HEARTBEAT_TIMEOUT, client_id)
-    sweep(queue_key, now)
-
     return result
 end
 
@@ -197,8 +184,7 @@ local function handle_stall(queue_key, id, retry_at)
 end
 
 -- Dequeue jobs from waiting queue
-local function dequeue(queue_key, client_id, now, limit)
-    local expiry = now + HEARTBEAT_TIMEOUT
+local function dequeue(queue_key, client_id, now, expiry, limit)
     local expiry_key = get_expiry_key(queue_key)
     local checkouts_key = get_checkouts_key(queue_key, client_id)
     local jobs = redis.call('ZRANGEBYSCORE', queue_key, 0, now, 'LIMIT', 0, limit)
@@ -237,9 +223,8 @@ local function cancel(queue_key, id)
 end
 
 -- Bump heartbeat for client and sweep stalled clients
-local function bump(queue_key, client_id, now)
+local function bump(queue_key, client_id, now, expiry)
     local expiry_key = get_expiry_key(queue_key)
-    local expiry = now + HEARTBEAT_TIMEOUT
 
     -- Check if this client exists in expiry set
     local existing = redis.call('ZSCORE', expiry_key, client_id)
@@ -316,10 +301,11 @@ redis.register_function {
         local queue_key = keys[1]
         local client_id = args[1]
         local now = tonumber(args[2])
-        local limit = tonumber(args[3])
+        local expiry = tonumber(args[3])
+        local limit = tonumber(args[4])
 
         redis.setresp(3)
-        return dequeue(queue_key, client_id, now, limit)
+        return dequeue(queue_key, client_id, now, expiry, limit)
     end,
     flags = {}
 }
@@ -344,9 +330,10 @@ redis.register_function {
         local queue_key = keys[1]
         local client_id = args[1]
         local now = tonumber(args[2])
+        local expiry = tonumber(args[3])
 
         redis.setresp(3)
-        return bump(queue_key, client_id, now)
+        return bump(queue_key, client_id, now, expiry)
     end,
     flags = {}
 }

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getEnvironmentData } from 'node:worker_threads';
-import { HEARTBEAT_INTERVAL } from './constants.js';
+import { HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT } from './constants.js';
 import { Pool } from './pool.js';
 import { Queue } from './queue.js';
 import { generateId } from './utils.js';
@@ -14,7 +14,7 @@ const luaScript = readFileSync(join(__dirname, 'queasy.lua'), 'utf8');
 /** @typedef {import('redis').RedisClientType} RedisClient */
 /** @typedef {import('./types').Job} Job */
 
-/** @typedef {{ queue: Queue, bumpTimer: NodeJS.Timeout }} QueueEntry */
+/** @typedef {{ queue: Queue, bumpTimer?: NodeJS.Timeout }} QueueEntry */
 
 /**
  * Parse job data from Redis response
@@ -73,7 +73,6 @@ export class Client {
             this.queues[key] = /** @type {QueueEntry} */ ({
                 queue: new Queue(key, this, this.pool),
             });
-            this.scheduleBump(key); // Adds the bumpTimer property
         }
         return this.queues[key].queue;
     }
@@ -96,17 +95,22 @@ export class Client {
      * @param {string} key
      */
     scheduleBump(key) {
-        if (this.queues[key].bumpTimer) clearTimeout(this.queues[key].bumpTimer);
-        this.queues[key].bumpTimer = setTimeout(() => this.bump(key), HEARTBEAT_INTERVAL);
+        const queueEntry = this.queues[key];
+        if (queueEntry.bumpTimer) clearTimeout(queueEntry.bumpTimer);
+        queueEntry.bumpTimer = setTimeout(() => this.bump(key), HEARTBEAT_INTERVAL);
     }
 
     /**
      * @param {string} key
      */
     async bump(key) {
+        // Set up the next bump first, in case this
+        this.scheduleBump(key);
+        const now = Date.now();
+        const expiry = now + HEARTBEAT_TIMEOUT;
         await this.redis.fCall('queasy_bump', {
             keys: [key],
-            arguments: [this.clientId, String(Date.now())],
+            arguments: [this.clientId, String(now), String(expiry)],
         });
     }
 
@@ -152,12 +156,17 @@ export class Client {
      * @returns {Promise<Job[]>}
      */
     async dequeue(key, count) {
+        const now = Date.now();
+        const expiry = now + HEARTBEAT_TIMEOUT;
         const result = /** @type {string[][]} */ (
             await this.redis.fCall('queasy_dequeue', {
                 keys: [key],
-                arguments: [this.clientId, String(Date.now()), String(count)],
+                arguments: [this.clientId, String(now), String(expiry), String(count)],
             })
         );
+
+        // Heartbeats should start with the first dequeue.
+        this.scheduleBump(key);
 
         return /** @type Job[] */ (result.map((jobArray) => parseJob(jobArray)).filter(Boolean));
     }

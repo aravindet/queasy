@@ -1,13 +1,11 @@
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to coding agents working in this repository.
 
 ## Commands
 
 ```sh
 npm test                  # Run all tests (requires Redis on localhost:6379)
 npm test -- --test-name-pattern="pattern"  # Run tests matching a pattern
-node --test test/queue.test.js             # Run a single test file
+npm test -- test/queue.test.js             # Run a single test file
 npm run lint              # Lint with Biome
 npm run format            # Auto-format with Biome
 npm run typecheck         # TypeScript check via jsconfig.json (JSDoc types)

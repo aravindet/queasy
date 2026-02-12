@@ -42,7 +42,7 @@ Queues are dequeued based on their priority and the ratio of available capacity 
 
 When a worker start processing a job, a timer is started; if the job completes or throws, the timer is cleared. If the timeout occurs, the job is marked stalled and the worker is removed from the pool so it no longer receives new jobs. A new worker is also created and added to the pool to replace it. 
 
-The unhealthy worker (with stalled jobs) continues to run until it has *only* stalled jobs remaining. When this happens, the worker is terminated, and all its jobs are 
+The unhealthy worker (with stalled jobs) continues to run until it has *only* stalled jobs remaining. When this happens, the worker is terminated, and all its stalled jobs are retried.
 
 ### Stall handling
 
@@ -109,7 +109,7 @@ Every handler module must have a named export `handle`, a function that is calle
 
 It receives two arguments:
 - `data`, the JSON value passed to dispatch
-- `job`, an object contains all the job options as well as `failureCount` and `stallCount`
+- `job`, a Job object contains the job attributes except data
 
 This function may throw (or return a Promise that rejects) to indicate job failure. If the thrown error is an
 instance of `PermanentError`, or if `maxRetries` has been reached, the job is not retried. Otherwise, the job
