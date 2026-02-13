@@ -59,6 +59,7 @@ export class Pool {
             console.warn('Worker message with unknown Job ID; Ignoring.');
             return;
         }
+        clearTimeout(jobEntry.timer);
         workerEntry.capacity += jobEntry.size;
         workerEntry.jobCount -= 1;
 

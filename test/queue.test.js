@@ -22,38 +22,18 @@ describe('Queue E2E', () => {
     });
 
     afterEach(async () => {
+        // Terminate worker threads to allow clean exit
+        await client.close();
+
         // Clean up all queue data
         const keys = await redis.keys(`{${QUEUE_NAME}}*`);
         if (keys.length > 0) {
             await redis.del(keys);
         }
 
-        // Terminate worker threads to allow clean exit
-        await client.close();
-
         // Close Redis connection
         await redis.quit();
     });
-
-    /**
-     * Poll until job completes or timeout
-     * @param {string} jobId
-     * @param {number} timeoutMs
-     * @param {string} queueName - Optional queue name, defaults to QUEUE_NAME
-     * @returns {Promise<boolean>} True if completed, false if timeout
-     */
-    async function waitForJobCompletion(jobId, timeoutMs = 3000, queueName = QUEUE_NAME) {
-        const deadline = Date.now() + timeoutMs;
-        while (Date.now() < deadline) {
-            const waiting = await redis.zScore(`{${queueName}}`, jobId);
-            const activeJobExists = await redis.exists(`{${queueName}}:active_job:${jobId}`);
-            if (waiting === null && activeJobExists === 0) {
-                return true;
-            }
-            await new Promise((r) => setTimeout(r, 50));
-        }
-        return false;
-    }
 
     describe('dispatch()', () => {
         it('should dispatch a job and store it in waiting queue', async () => {
@@ -146,9 +126,7 @@ describe('Queue E2E', () => {
 
             const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
             await q.listen(handlerPath);
-
-            const completed = await waitForJobCompletion(jobId);
-            assert.ok(completed, 'Job should complete within timeout');
+            await q.dequeue();
 
             // Job should be removed from all queues
             const waitingScore = await redis.zScore(`{${QUEUE_NAME}}`, jobId);
@@ -160,7 +138,7 @@ describe('Queue E2E', () => {
 
         it('should process multiple jobs', async () => {
             const q = client.queue(QUEUE_NAME);
-            const jobIds = await Promise.all([
+            await Promise.all([
                 q.dispatch({ id: 1 }),
                 q.dispatch({ id: 2 }),
                 q.dispatch({ id: 3 }),
@@ -168,13 +146,7 @@ describe('Queue E2E', () => {
 
             const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
             await q.listen(handlerPath);
-
-            // Wait for all jobs to complete
-            const results = await Promise.all(jobIds.map((id) => waitForJobCompletion(id)));
-            assert.ok(
-                results.every((r) => r === true),
-                'All jobs should complete'
-            );
+            await q.dequeue();
 
             // All jobs should be cleaned up
             const waitingJobs = await redis.zRange(`{${QUEUE_NAME}}`, 0, -1);
@@ -191,9 +163,7 @@ describe('Queue E2E', () => {
 
             const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
             await q.listen(handlerPath);
-
-            // Wait a bit
-            await new Promise((r) => setTimeout(r, 500));
+            await q.dequeue();
 
             // Job should still be waiting
             const score = await redis.zScore(`{${QUEUE_NAME}}`, jobId);
@@ -212,10 +182,7 @@ describe('Queue E2E', () => {
 
             const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
             await q.listen(handlerPath);
-
-            // Only job2 should complete
-            const job2Completed = await waitForJobCompletion(jobId2);
-            assert.ok(job2Completed);
+            await q.dequeue();
 
             // job1 should not exist
             const job1Score = await redis.zScore(`{${QUEUE_NAME}}`, jobId1);
@@ -223,6 +190,13 @@ describe('Queue E2E', () => {
 
             const job1Exists = await redis.exists(`{${QUEUE_NAME}}:waiting_job:${jobId1}`);
             assert.equal(job1Exists, 0);
+
+            // job2 should be fully processed
+            const job2Score = await redis.zScore(`{${QUEUE_NAME}}`, jobId2);
+            assert.equal(job2Score, null);
+
+            const job2Active = await redis.exists(`{${QUEUE_NAME}}:active_job:${jobId2}`);
+            assert.equal(job2Active, 0);
         });
     });
 
@@ -237,15 +211,14 @@ describe('Queue E2E', () => {
             const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
             await queue1.listen(handlerPath);
             await queue2.listen(handlerPath);
+            await Promise.all([queue1.dequeue(), queue2.dequeue()]);
 
-            // Both jobs should complete
-            const [completed1, completed2] = await Promise.all([
-                waitForJobCompletion(jobId1, 3000, 'queue1'),
-                waitForJobCompletion(jobId2, 3000, 'queue2'),
-            ]);
+            // Both jobs should be cleaned up
+            const score1 = await redis.zScore('{queue1}', jobId1);
+            assert.equal(score1, null, 'Queue 1 job should be processed');
 
-            assert.ok(completed1, 'Queue 1 job should complete');
-            assert.ok(completed2, 'Queue 2 job should complete');
+            const score2 = await redis.zScore('{queue2}', jobId2);
+            assert.equal(score2, null, 'Queue 2 job should be processed');
 
             // Cleanup
             const keys2 = await redis.keys('{queue2}*');
@@ -257,22 +230,26 @@ describe('Queue E2E', () => {
     });
 
     describe('failure handlers', () => {
-        it('should process failed jobs with separate failure handler', async () => {
+        it('should dispatch fail job on permanent failure', async () => {
+            // Clean stale keys from previous runs
+            const staleKeys = await redis.keys('{fail-test}*');
+            if (staleKeys.length > 0) await redis.del(staleKeys);
+
             const q = client.queue('fail-test');
-            await q.dispatch({ task: 'will-fail' });
+            const jobId = await q.dispatch({ task: 'will-fail' });
 
             const handlerPath = new URL('./fixtures/with-failure-handler.js', import.meta.url)
                 .pathname;
-            const failHandlerPath = new URL('./fixtures/failure-handler.js', import.meta.url)
-                .pathname;
 
-            await q.listen(handlerPath, {
-                maxRetries: 0, // Fail immediately without retries
-                failHandler: failHandlerPath,
-            });
+            // Listen without failHandler so no fail queue listener races us
+            await q.listen(handlerPath, { maxRetries: 0 });
+            // Set failKey manually so the fail job is created but not consumed
+            q.failKey = `${q.key}-fail`;
+            await q.dequeue();
 
-            // Wait for job to fail and fail job to be created
-            await new Promise((r) => setTimeout(r, 500));
+            // Original job should be cleaned up
+            const activeExists = await redis.exists(`{fail-test}:active_job:${jobId}`);
+            assert.equal(activeExists, 0);
 
             // Fail job should exist in fail queue
             const failJobIds = await redis.zRange('{fail-test}-fail', 0, -1);
@@ -289,12 +266,10 @@ describe('Queue E2E', () => {
             assert.equal(parsedFailData.length, 3, 'Fail job should have [jobId, data, error]');
 
             // Verify the structure contains the original data
-            const originalData = JSON.parse(parsedFailData[1]);
-            assert.deepEqual(originalData, { task: 'will-fail' });
+            assert.deepEqual(parsedFailData[1], { task: 'will-fail' });
 
             // Verify error is present
-            const error = JSON.parse(parsedFailData[2]);
-            assert.ok(error.message, 'Error should have a message');
+            assert.ok(parsedFailData[2].message, 'Error should have a message');
 
             // Cleanup
             const keys = await redis.keys('{fail-test}*');

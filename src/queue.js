@@ -93,7 +93,7 @@ export class Queue {
     }
 
     /**
-     * Picks jobs from queues based on available capacity and executes them.
+     * Picks jobs from queues based on available capacity and processes them.
      * @returns {Promise<unknown>}
      */
 
@@ -107,39 +107,39 @@ export class Queue {
 
         const jobs = await this.client.dequeue(this.key, capacity);
 
-        // We use forEach to process jobs in parallel without keeping the
-        // dequeue function waiting for the overall results
-        jobs.forEach(async (job) => {
-            // Check if job has exceeded stall limit
-            if (job.stallCount >= maxStalls) {
-                // Job has stalled too many times - fail it permanently
-                if (!this.failKey) return this.client.finish(this.key, job.id);
-
-                const failJobData = [job.id, job.data, { message: 'Max stalls exceeded' }];
-                return this.client.fail(this.key, this.failKey, job.id, failJobData);
-            }
-
-            try {
-                await pool.process(handlerPath, job, size, timeout);
-                await this.client.finish(this.key, job.id);
-            } catch (message) {
-                const { error } = /** @type {Required<DoneMessage>} */ (message);
-                const { retryAt = 0, kind } = error;
-
-                if (kind === 'permanent' || job.retryCount >= maxRetries) {
+        return Promise.all(
+            jobs.map(async (job) => {
+                // Check if job has exceeded stall limit
+                if (job.stallCount >= maxStalls) {
+                    // Job has stalled too many times - fail it permanently
                     if (!this.failKey) return this.client.finish(this.key, job.id);
 
-                    const failJobData = [job.id, job.data, error];
+                    const failJobData = [job.id, job.data, { message: 'Max stalls exceeded' }];
                     return this.client.fail(this.key, this.failKey, job.id, failJobData);
                 }
 
-                const backoffUntil =
-                    Date.now() + Math.min(maxBackoff, minBackoff * 2 ** job.retryCount);
+                try {
+                    await pool.process(handlerPath, job, size, timeout);
+                    await this.client.finish(this.key, job.id);
+                } catch (message) {
+                    const { error } = /** @type {Required<DoneMessage>} */ (message);
+                    const { retryAt = 0, kind } = error;
 
-                // Retriable error: call retry
-                await this.client.retry(this.key, job.id, Math.max(retryAt, backoffUntil));
-            }
-        });
+                    if (kind === 'permanent' || job.retryCount >= maxRetries) {
+                        if (!this.failKey) return this.client.finish(this.key, job.id);
+
+                        const failJobData = [job.id, job.data, error];
+                        return this.client.fail(this.key, this.failKey, job.id, failJobData);
+                    }
+
+                    const backoffUntil =
+                        Date.now() + Math.min(maxBackoff, minBackoff * 2 ** job.retryCount);
+
+                    // Retriable error: call retry
+                    await this.client.retry(this.key, job.id, Math.max(retryAt, backoffUntil));
+                }
+            })
+        );
     }
 
     /**
