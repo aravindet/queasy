@@ -105,7 +105,11 @@ export class Pool {
         for (const jobId of stalledJobs) {
             const jobEntry = this.activeJobs.get(jobId);
             this.activeJobs.delete(jobId);
-            jobEntry?.reject({ op: 'done', jobId });
+            jobEntry?.reject({
+                op: 'done',
+                jobId,
+                error: { name: 'StallError', message: 'Job stalled', kind: 'stall' },
+            });
         }
     }
 
@@ -145,7 +149,8 @@ export class Pool {
             worker.terminate();
         }
 
-        for (const [jobId, { reject }] of this.activeJobs.entries()) {
+        for (const [jobId, { reject, timer }] of this.activeJobs.entries()) {
+            clearTimeout(timer);
             reject({
                 op: 'done',
                 jobId,

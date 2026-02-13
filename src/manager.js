@@ -25,7 +25,6 @@ export class Manager {
 
     /** @param {Queue} queue */
     addQueue(queue) {
-        console.log('real addQueue called');
         // Add this at the beginning so we dequeue it at the next available opportunity.
         this.queues.unshift({ queue, lastDequeuedAt: 0, isBusy: false });
         this.busyCount += 1;
@@ -45,10 +44,10 @@ export class Manager {
             this.timer = null;
         }
 
-        const batchSize = Math.max(
-            1,
-            Math.floor(this.pool.capacity / this.busyCount / entry.queue.handlerOptions.size)
-        );
+        const size = entry.queue.handlerOptions.size;
+        if (this.pool.capacity < size) return;
+
+        const batchSize = Math.max(1, Math.floor(this.pool.capacity / this.busyCount / size));
         entry.lastDequeuedAt = Date.now(); // We store the time just before the call to dequeue.
         const { count } = await entry.queue.dequeue(batchSize);
 
@@ -82,11 +81,14 @@ function compareQueueEntries(a, b) {
     if (a.isBusy > b.isBusy) return -1; // a busy, b not -> a first
     if (a.isBusy < b.isBusy) return 1; // a free, b busy -> b first
 
+    if (a.queue.handlerOptions.priority > b.queue.handlerOptions.priority) return 1; // a higher -> a first
+    if (a.queue.handlerOptions.priority < b.queue.handlerOptions.priority) return -1; // b higher -> b first
+
     if (a.lastDequeuedAt > b.lastDequeuedAt) return -1; // a newer -> b first
     if (a.lastDequeuedAt < b.lastDequeuedAt) return 1; // a older -> a first
 
     if (a.queue.handlerOptions.size > b.queue.handlerOptions.size) return 1; // a larger -> a first
-    if (a.queue.handlerOptions.size < b.queue.handlerOptions.size) return -1; // b larger -> a first
+    if (a.queue.handlerOptions.size < b.queue.handlerOptions.size) return -1; // b larger -> b first
 
     return 0;
 }

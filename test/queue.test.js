@@ -237,6 +237,157 @@ describe('Queue E2E', () => {
         });
     });
 
+    describe('failHandler option', () => {
+        it('should set up fail queue via failHandler listen option', async () => {
+            const staleKeys = await redis.keys('{fail-opt}*');
+            if (staleKeys.length > 0) await redis.del(staleKeys);
+
+            const q = client.queue('fail-opt');
+            await q.dispatch({ task: 'will-fail' });
+
+            const mainHandler = new URL('./fixtures/with-failure-handler.js', import.meta.url)
+                .pathname;
+            const failHandler = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
+
+            // listen with failHandler option — this covers queue.js lines 60-63
+            await q.listen(mainHandler, { maxRetries: 0, failHandler });
+
+            // Dequeue from the main queue
+            await (await q.dequeue(1)).promise;
+
+            // Fail job should exist in the fail queue
+            const failJobIds = await redis.zRange('{fail-opt}-fail', 0, -1);
+            assert.ok(failJobIds.length > 0, 'Fail job should be created in fail queue');
+
+            // Cleanup
+            const keys = await redis.keys('{fail-opt}*');
+            if (keys.length > 0) await redis.del(keys);
+        });
+    });
+
+    describe('retry and backoff', () => {
+        it('should retry a failed job with exponential backoff', async () => {
+            const q = client.queue(QUEUE_NAME);
+            const jobId = await q.dispatch({ task: 'will-fail' });
+
+            const handlerPath = new URL('./fixtures/always-fail-handler.js', import.meta.url)
+                .pathname;
+            await q.listen(handlerPath, { maxRetries: 2, minBackoff: 1000, maxBackoff: 10000 });
+
+            const before = Date.now();
+            await (await q.dequeue(1)).promise;
+
+            // Job should be back in the waiting set with a backoff score
+            const score = await redis.zScore(`{${QUEUE_NAME}}`, jobId);
+            assert.ok(score !== null, 'Job should be back in waiting set');
+            assert.ok(score >= before + 1000, 'Score should include backoff');
+        });
+    });
+
+    describe('maxStalls handling', () => {
+        it('should fail a stalled job when maxStalls exceeded and failKey is set', async () => {
+            const staleKeys = await redis.keys('{stall-test}*');
+            if (staleKeys.length > 0) await redis.del(staleKeys);
+
+            const q = client.queue('stall-test');
+            const jobId = await q.dispatch({ task: 'stalled' });
+
+            // Manually set stall_count to exceed maxStalls (default 3)
+            await redis.hSet(`{stall-test}:waiting_job:${jobId}`, 'stall_count', '5');
+
+            const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
+            await q.listen(handlerPath, { maxStalls: 3 });
+            q.failKey = '{stall-test}-fail';
+
+            await (await q.dequeue(1)).promise;
+
+            // Job should be removed from waiting set
+            const score = await redis.zScore('{stall-test}', jobId);
+            assert.equal(score, null, 'Job should be removed from waiting');
+
+            // Fail job should exist in fail queue
+            const failJobIds = await redis.zRange('{stall-test}-fail', 0, -1);
+            assert.ok(failJobIds.length > 0, 'Fail job should be created');
+
+            // Verify fail job data contains stall message
+            const failJobId = failJobIds[0];
+            const failJobData = await redis.hGet(
+                `{stall-test}-fail:waiting_job:${failJobId}`,
+                'data'
+            );
+            const parsed = JSON.parse(failJobData || 'null');
+            assert.deepEqual(parsed[2], { message: 'Max stalls exceeded' });
+
+            // Cleanup
+            const keys = await redis.keys('{stall-test}*');
+            if (keys.length > 0) await redis.del(keys);
+        });
+
+        it('should finish a stalled job when maxStalls exceeded and no failKey', async () => {
+            const staleKeys = await redis.keys('{stall-nofail}*');
+            if (staleKeys.length > 0) await redis.del(staleKeys);
+
+            const q = client.queue('stall-nofail');
+            const jobId = await q.dispatch({ task: 'stalled' });
+
+            await redis.hSet(`{stall-nofail}:waiting_job:${jobId}`, 'stall_count', '5');
+
+            const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
+            await q.listen(handlerPath, { maxStalls: 3 });
+            // No failKey set — job should just be finished
+
+            await (await q.dequeue(1)).promise;
+
+            // Job should be fully removed
+            const score = await redis.zScore('{stall-nofail}', jobId);
+            assert.equal(score, null, 'Job should be removed from waiting');
+
+            const activeExists = await redis.exists(`{stall-nofail}:active_job:${jobId}`);
+            assert.equal(activeExists, 0, 'Active job should be cleaned up');
+
+            // Cleanup
+            const keys = await redis.keys('{stall-nofail}*');
+            if (keys.length > 0) await redis.del(keys);
+        });
+    });
+
+    describe('invalid handler', () => {
+        it('should fail when handler has no handle export', async () => {
+            const staleKeys = await redis.keys('{bad-handler}*');
+            if (staleKeys.length > 0) await redis.del(staleKeys);
+
+            const q = client.queue('bad-handler');
+            await q.dispatch({ task: 'test' });
+
+            const handlerPath = new URL('./fixtures/no-handle-handler.js', import.meta.url)
+                .pathname;
+            await q.listen(handlerPath, { maxRetries: 0 });
+            q.failKey = '{bad-handler}-fail';
+
+            await (await q.dequeue(1)).promise;
+
+            // Fail job should exist
+            const failJobIds = await redis.zRange('{bad-handler}-fail', 0, -1);
+            assert.ok(failJobIds.length > 0, 'Fail job should be created');
+
+            // Verify error message
+            const failJobId = failJobIds[0];
+            const failJobData = await redis.hGet(
+                `{bad-handler}-fail:waiting_job:${failJobId}`,
+                'data'
+            );
+            const parsed = JSON.parse(failJobData || 'null');
+            assert.ok(
+                parsed[2].message.includes('Unable to load handler'),
+                'Error should mention unable to load handler'
+            );
+
+            // Cleanup
+            const keys = await redis.keys('{bad-handler}*');
+            if (keys.length > 0) await redis.del(keys);
+        });
+    });
+
     describe('failure handlers', () => {
         it('should dispatch fail job on permanent failure', async () => {
             // Clean stale keys from previous runs
