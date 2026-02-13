@@ -275,13 +275,13 @@ describe('Queue E2E', () => {
             await new Promise((r) => setTimeout(r, 500));
 
             // Fail job should exist in fail queue
-            const failJobIds = await redis.zRange('{fail-test-fail}', 0, -1);
+            const failJobIds = await redis.zRange('{fail-test}-fail', 0, -1);
             assert.ok(failJobIds.length > 0, 'Fail job should be created');
 
             // Verify fail job data structure
             const failJobId = failJobIds[0];
             const failJobData = await redis.hGet(
-                `{fail-test-fail}:waiting_job:${failJobId}`,
+                `{fail-test}-fail:waiting_job:${failJobId}`,
                 'data'
             );
             const parsedFailData = JSON.parse(failJobData);
@@ -297,7 +297,7 @@ describe('Queue E2E', () => {
             assert.ok(error.message, 'Error should have a message');
 
             // Cleanup
-            const keys = await redis.keys('{fail-test*}*');
+            const keys = await redis.keys('{fail-test}*');
             if (keys.length > 0) await redis.del(keys);
         });
     });

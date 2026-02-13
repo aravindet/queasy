@@ -121,6 +121,7 @@ export class Queue {
 
             try {
                 await pool.process(handlerPath, job, size, timeout);
+                await this.client.finish(this.key, job.id);
             } catch (message) {
                 const { error } = /** @type {Required<DoneMessage>} */ (message);
                 const { retryAt = 0, kind } = error;
@@ -129,7 +130,7 @@ export class Queue {
                     if (!this.failKey) return this.client.finish(this.key, job.id);
 
                     const failJobData = [job.id, job.data, error];
-                    await this.client.fail(this.key, this.failKey, job.id, failJobData);
+                    return this.client.fail(this.key, this.failKey, job.id, failJobData);
                 }
 
                 const backoffUntil =

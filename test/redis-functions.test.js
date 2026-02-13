@@ -280,9 +280,10 @@ describe('Redis Lua functions', () => {
             await redis.hSet(`${QUEUE_NAME}:waiting_job:${jobId2}`, 'id', jobId2);
 
             // Dequeue
+            const expiryTime = now + 10000;
             const result = await redis.fCall('queasy_dequeue', {
                 keys: [QUEUE_NAME],
-                arguments: [clientId, now.toString(), '10'],
+                arguments: [clientId, now.toString(), expiryTime.toString(), '10'],
             });
 
             assert.equal(result.length, 2);
@@ -298,7 +299,7 @@ describe('Redis Lua functions', () => {
             // Verify client is in expiry set
             const expiry = await redis.zScore(`${QUEUE_NAME}:expiry`, clientId);
             assert.ok(expiry !== null);
-            assert.equal(Number(expiry), now + 10000);
+            assert.equal(Number(expiry), expiryTime);
 
             // Verify job data moved to active
             const exists1 = await redis.exists(`${QUEUE_NAME}:active_job:${jobId1}`);
@@ -317,7 +318,7 @@ describe('Redis Lua functions', () => {
             // Try to dequeue
             const result = await redis.fCall('queasy_dequeue', {
                 keys: [QUEUE_NAME],
-                arguments: [clientId, now.toString(), '10'],
+                arguments: [clientId, now.toString(), String(now + 10000), '10'],
             });
 
             assert.equal(result.length, 0);
@@ -335,7 +336,7 @@ describe('Redis Lua functions', () => {
             // Try to dequeue
             const result = await redis.fCall('queasy_dequeue', {
                 keys: [QUEUE_NAME],
-                arguments: [clientId, now.toString(), '10'],
+                arguments: [clientId, now.toString(), String(now + 10000), '10'],
             });
 
             assert.equal(result.length, 0);
@@ -354,16 +355,17 @@ describe('Redis Lua functions', () => {
             });
 
             // Bump
+            const newExpiry = now + 10000;
             const result = await redis.fCall('queasy_bump', {
                 keys: [QUEUE_NAME],
-                arguments: [clientId, now.toString()],
+                arguments: [clientId, now.toString(), newExpiry.toString()],
             });
 
             assert.equal(result, 1);
 
             // Verify expiry was updated
             const expiry = await redis.zScore(`${QUEUE_NAME}:expiry`, clientId);
-            assert.equal(Number(expiry), now + 10000);
+            assert.equal(Number(expiry), newExpiry);
         });
 
         it('should return 0 if client does not exist', async () => {
@@ -372,7 +374,7 @@ describe('Redis Lua functions', () => {
 
             const result = await redis.fCall('queasy_bump', {
                 keys: [QUEUE_NAME],
-                arguments: [clientId, now.toString()],
+                arguments: [clientId, now.toString(), String(now + 10000)],
             });
 
             assert.equal(result, 0);
@@ -613,7 +615,7 @@ describe('Redis Lua functions', () => {
             // Bump from healthy client triggers sweep
             const result = await redis.fCall('queasy_bump', {
                 keys: [QUEUE_NAME],
-                arguments: [healthyClientId, now.toString()],
+                arguments: [healthyClientId, now.toString(), String(now + 10000)],
             });
 
             assert.equal(result, 1);
@@ -665,7 +667,7 @@ describe('Redis Lua functions', () => {
             // Bump from healthy client triggers sweep
             const result = await redis.fCall('queasy_bump', {
                 keys: [QUEUE_NAME],
-                arguments: [healthyClientId, now.toString()],
+                arguments: [healthyClientId, now.toString(), String(now + 10000)],
             });
 
             assert.equal(result, 1);

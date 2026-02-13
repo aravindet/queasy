@@ -10,14 +10,14 @@ setEnvironmentData('queasy_worker_context', true);
 
 /** @param {ExecMessage} msg */
 parentPort.on('message', async (msg) => {
-    const { handler, job } = msg;
+    const { handlerPath, job } = msg;
     try {
-        const handle = await import(pathToFileURL(handler).href);
-        if (typeof handler !== 'function') {
-            throw new Error(`Unable to load handler ${handler}`);
+        const mod = await import(pathToFileURL(handlerPath).href);
+        if (typeof mod.handle !== 'function') {
+            throw new Error(`Unable to load handler ${handlerPath}`);
         }
 
-        await handle(job.data, job);
+        await mod.handle(job.data, job);
         send({ op: 'done', jobId: job.id });
     } catch (err) {
         const { message, name, retryAt } = /** @type {Error & { retryAt?: number }} */ (err);
