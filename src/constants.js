@@ -1,7 +1,7 @@
-/** @typedef {import('./types').DequeueOptions} DequeueOptions */
+/** @typedef {import('./types').HandlerOptions} HandlerOptions */
 /** @typedef {import('./types').JobUpdateOptions} JobUpdateOptions */
 
-/** @type {Required<DequeueOptions>} */
+/** @type {Required<HandlerOptions>} */
 export const DEFAULT_RETRY_OPTIONS = {
     maxRetries: 10,
     maxStalls: 3,
@@ -18,7 +18,7 @@ export const DEFAULT_UPDATE_OPTIONS = {
     resetCounts: false,
 };
 
-/** @type {Required<DequeueOptions>} */
+/** @type {Required<HandlerOptions>} */
 export const FAILJOB_RETRY_OPTIONS = {
     maxRetries: 100,
     maxStalls: 3,

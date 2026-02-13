@@ -1,15 +1,16 @@
-import { DEFAULT_RETRY_OPTIONS, DEQUEUE_INTERVAL, FAILJOB_RETRY_OPTIONS } from './constants.js';
+import { DEFAULT_RETRY_OPTIONS, FAILJOB_RETRY_OPTIONS } from './constants.js';
 import { generateId } from './utils.js';
 
 // Import types:
 /** @typedef {import('redis').RedisClientType} RedisClient */
-/** @typedef {import('./types').DequeueOptions} DequeueOptions */
+/** @typedef {import('./types').HandlerOptions} HandlerOptions */
 /** @typedef {import('./types').ListenOptions} ListenOptions */
 /** @typedef {import('./types').JobOptions} JobOptions */
 /** @typedef {import('./types').Job} Job */
 /** @typedef {import('./types').DoneMessage} DoneMessage */
 /** @typedef {import('./client').Client} Client */
 /** @typedef {import('./pool').Pool} Pool */
+/** @typedef {import('./manager').Manager} Manager */
 
 /** @typedef {Required<Partial<Pick<Queue, keyof Queue>>>} ProcessingQueue */
 
@@ -21,17 +22,19 @@ export class Queue {
      * @param {string} key - Queue key
      * @param {Client} client - Redis client wrapper
      * @param {Pool | undefined} pool - Worker pool
+     * @param {Manager | undefined} manager - Capacity allocation manager
      */
-    constructor(key, client, pool) {
+    constructor(key, client, pool, manager) {
         this.key = key;
         this.client = client;
         this.pool = pool;
+        this.manager = manager;
 
         /** @type {NodeJS.Timeout | undefined} */
-        this.dequeueInterval = undefined;
+        // this.dequeueInterval = undefined;
 
-        /** @type {Required<DequeueOptions> | undefined} */
-        this.dequeueOptions = undefined;
+        /** @type {Required<HandlerOptions> | undefined} */
+        this.handlerOptions = undefined;
 
         /** @type {string | undefined} */
         this.handlerPath = undefined;
@@ -47,10 +50,10 @@ export class Queue {
      * @returns {Promise<void>}
      */
     async listen(handlerPath, { failHandler, failRetryOptions, ...retryOptions } = {}) {
-        if (!this.pool) throw new Error('Can’t listen on a client without workers');
+        if (!this.pool || !this.manager) throw new Error('Can’t listen on a non-processing client');
 
         this.handlerPath = handlerPath;
-        this.dequeueOptions = { ...DEFAULT_RETRY_OPTIONS, ...retryOptions };
+        this.handlerOptions = { ...DEFAULT_RETRY_OPTIONS, ...retryOptions };
 
         // Initialize failure handler on all workers if provided
         if (failHandler) {
@@ -59,9 +62,11 @@ export class Queue {
             failQueue.listen(failHandler, { ...FAILJOB_RETRY_OPTIONS, ...failRetryOptions });
         }
 
-        if (!this.dequeueInterval) {
-            this.dequeueInterval = setInterval(() => this.dequeue(), DEQUEUE_INTERVAL);
-        }
+        this.manager.addQueue(/** @type {ProcessingQueue} */ (this));
+
+        // if (!this.dequeueInterval) {
+        //     this.dequeueInterval = setInterval(() => this.dequeue(), DEQUEUE_INTERVAL);
+        // }
     }
 
     /**
@@ -93,21 +98,21 @@ export class Queue {
     }
 
     /**
-     * Picks jobs from queues based on available capacity and processes them.
-     * @returns {Promise<unknown>}
+     * Picks jobs from the queue and processes them
+     * @param {number} count
+     * @returns {Promise<{count: number, promise: Promise<Array<unknown>>}>}
      */
 
-    async dequeue() {
-        const { pool, handlerPath } = /** @type {{pool: Pool, handlerPath: string}} */ (this);
-        const { maxRetries, maxStalls, maxBackoff, minBackoff, size, timeout } =
-            /** @type {Required<DequeueOptions>} */ (this.dequeueOptions);
+    async dequeue(count) {
+        const { pool, handlerPath, handlerOptions } = /** @type {ProcessingQueue} */ (this);
+        const { maxRetries, maxStalls, maxBackoff, minBackoff, size, timeout } = handlerOptions;
 
-        const capacity = pool.getCapacity(size);
-        if (capacity <= 0) return;
+        // const capacity = pool.getCapacity(size);
+        // if (capacity <= 0) return;
 
-        const jobs = await this.client.dequeue(this.key, capacity);
+        const jobs = await this.client.dequeue(this.key, count);
 
-        return Promise.all(
+        const promise = Promise.all(
             jobs.map(async (job) => {
                 // Check if job has exceeded stall limit
                 if (job.stallCount >= maxStalls) {
@@ -140,15 +145,17 @@ export class Queue {
                 }
             })
         );
+
+        return { count: jobs.length, promise };
     }
 
     /**
      * Stop the dequeue interval and bump timer for this queue
      */
     close() {
-        if (this.dequeueInterval) {
-            clearInterval(this.dequeueInterval);
-            this.dequeueInterval = undefined;
-        }
+        // if (this.dequeueInterval) {
+        //     clearInterval(this.dequeueInterval);
+        //     this.dequeueInterval = undefined;
+        // }
     }
 }

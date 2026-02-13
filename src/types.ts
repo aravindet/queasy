@@ -12,35 +12,6 @@ export interface JobCoreOptions {
 }
 
 /**
- * Retry strategy configuration
- */
-export interface DequeueOptions {
-    /** Maximum number of retries before permanent failure */
-    maxRetries?: number;
-    /** Maximum number of stalls before permanent failure */
-    maxStalls?: number;
-    /** Minimum backoff in milliseconds */
-    minBackoff?: number;
-    /** Maximum backoff in milliseconds */
-    maxBackoff?: number;
-    /** Size of the job (as a percent of total worker capacity) */
-    size?: number;
-    /** Maximum processing duration before considering stalled */
-    timeout?: number;
-}
-
-/**
- * Options for listen() - queue-level retry strategy
- */
-export interface ListenOptions extends DequeueOptions {
-    /** Path to failure handler module (optional) */
-    failHandler?: string;
-
-    /** Retry options of the fail job */
-    failRetryOptions?: DequeueOptions;
-}
-
-/**
  * Update behavior flags
  */
 export interface JobUpdateOptions {
@@ -71,6 +42,37 @@ export interface JobState {
  * Complete job representation passed to handlers
  */
 export type Job = Required<JobCoreOptions> & JobState;
+
+/**
+ * Handler options
+ */
+export interface HandlerOptions {
+    /** Maximum number of retries before permanent failure */
+    maxRetries?: number;
+    /** Maximum number of stalls before permanent failure */
+    maxStalls?: number;
+    /** Minimum backoff in milliseconds */
+    minBackoff?: number;
+    /** Maximum backoff in milliseconds */
+    maxBackoff?: number;
+    /** Size of the job (as a percent of total worker capacity) */
+    size?: number;
+    /** Maximum processing duration before considering stalled */
+    timeout?: number;
+    /** Priority of this queue (vs other queues) */
+    priority?: number;
+}
+
+/**
+ * Options for listen() - queue-level retry strategy
+ */
+export interface ListenOptions extends HandlerOptions {
+    /** Path to failure handler module (optional) */
+    failHandler?: string;
+
+    /** Retry options of the fail job */
+    failRetryOptions?: HandlerOptions;
+}
 
 export type ExecMessage = {
     op: 'exec';

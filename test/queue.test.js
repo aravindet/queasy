@@ -1,5 +1,5 @@
 import assert from 'node:assert';
-import { afterEach, beforeEach, describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import { createClient } from 'redis';
 import { Client } from '../src/index.js';
 
@@ -8,6 +8,7 @@ const QUEUE_NAME = 'test';
 describe('Queue E2E', () => {
     /** @type {import('redis').RedisClientType} */
     let redis;
+    /** @type {import('../src/client.js').Client}*/
     let client;
 
     beforeEach(async () => {
@@ -18,12 +19,15 @@ describe('Queue E2E', () => {
             await redis.del(keys);
         }
 
-        client = new Client(redis);
+        client = new Client(redis, 1);
+
+        // Mock this so that no actual work is dequeued by the manager.
+        if (client.manager) client.manager.addQueue = mock.fn();
     });
 
     afterEach(async () => {
         // Terminate worker threads to allow clean exit
-        await client.close();
+        client.close();
 
         // Clean up all queue data
         const keys = await redis.keys(`{${QUEUE_NAME}}*`);
@@ -126,7 +130,7 @@ describe('Queue E2E', () => {
 
             const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
             await q.listen(handlerPath);
-            await q.dequeue();
+            await (await q.dequeue(1)).promise;
 
             // Job should be removed from all queues
             const waitingScore = await redis.zScore(`{${QUEUE_NAME}}`, jobId);
@@ -146,7 +150,7 @@ describe('Queue E2E', () => {
 
             const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
             await q.listen(handlerPath);
-            await q.dequeue();
+            await (await q.dequeue(5)).promise;
 
             // All jobs should be cleaned up
             const waitingJobs = await redis.zRange(`{${QUEUE_NAME}}`, 0, -1);
@@ -163,7 +167,7 @@ describe('Queue E2E', () => {
 
             const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
             await q.listen(handlerPath);
-            await q.dequeue();
+            await (await q.dequeue(1)).promise;
 
             // Job should still be waiting
             const score = await redis.zScore(`{${QUEUE_NAME}}`, jobId);
@@ -182,7 +186,7 @@ describe('Queue E2E', () => {
 
             const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
             await q.listen(handlerPath);
-            await q.dequeue();
+            await (await q.dequeue(1)).promise;
 
             // job1 should not exist
             const job1Score = await redis.zScore(`{${QUEUE_NAME}}`, jobId1);
@@ -211,7 +215,11 @@ describe('Queue E2E', () => {
             const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
             await queue1.listen(handlerPath);
             await queue2.listen(handlerPath);
-            await Promise.all([queue1.dequeue(), queue2.dequeue()]);
+            // First wait for these jobs to be dequeued and sent to workers
+            const dequeued = await Promise.all([queue1.dequeue(1), queue2.dequeue(1)]);
+
+            // Now wait for the workers to finish processing
+            await Promise.all(dequeued.map(({ promise }) => promise));
 
             // Both jobs should be cleaned up
             const score1 = await redis.zScore('{queue1}', jobId1);
@@ -245,7 +253,7 @@ describe('Queue E2E', () => {
             await q.listen(handlerPath, { maxRetries: 0 });
             // Set failKey manually so the fail job is created but not consumed
             q.failKey = `${q.key}-fail`;
-            await q.dequeue();
+            await (await q.dequeue(1)).promise;
 
             // Original job should be cleaned up
             const activeExists = await redis.exists(`{fail-test}:active_job:${jobId}`);
@@ -261,7 +269,7 @@ describe('Queue E2E', () => {
                 `{fail-test}-fail:waiting_job:${failJobId}`,
                 'data'
             );
-            const parsedFailData = JSON.parse(failJobData);
+            const parsedFailData = JSON.parse(failJobData || 'null');
             assert.ok(Array.isArray(parsedFailData), 'Fail job data should be an array');
             assert.equal(parsedFailData.length, 3, 'Fail job should have [jobId, data, error]');
 

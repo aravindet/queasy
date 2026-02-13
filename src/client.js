@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getEnvironmentData } from 'node:worker_threads';
 import { HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT } from './constants.js';
+import { Manager } from './manager.js';
 import { Pool } from './pool.js';
 import { Queue } from './queue.js';
 import { generateId } from './utils.js';
@@ -44,7 +45,7 @@ export function parseJob(jobArray) {
 export class Client {
     /**
      * @param {RedisClient} redis - Redis client
-     * @param {number} workerCount - Allow this client to dequeue jobs.
+     * @param {number?} workerCount - Allow this client to dequeue jobs.
      */
     constructor(redis, workerCount) {
         this.redis = redis;
@@ -55,6 +56,7 @@ export class Client {
 
         const inWorker = getEnvironmentData('queasy_worker_context');
         this.pool = !inWorker && workerCount !== 0 ? new Pool(workerCount) : undefined;
+        if (this.pool) this.manager = new Manager(this.pool);
 
         // We are not awaiting this; we rely on Redis’ single-threaded blocking
         // nature to ensure that this load completes before other Redis commands
@@ -71,7 +73,7 @@ export class Client {
         const key = isKey ? name : `{${name}}`;
         if (!this.queues[key]) {
             this.queues[key] = /** @type {QueueEntry} */ ({
-                queue: new Queue(key, this, this.pool),
+                queue: new Queue(key, this, this.pool, this.manager),
             });
         }
         return this.queues[key].queue;
@@ -86,6 +88,7 @@ export class Client {
             clearTimeout(this.queues[name].bumpTimer);
         }
         if (this.pool) this.pool.close();
+        if (this.manager) this.manager.close();
         this.queues = {};
         this.pool = undefined;
     }

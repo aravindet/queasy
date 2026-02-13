@@ -22,14 +22,14 @@ import { generateId } from './utils.js';
  *  }} JobEntry */
 
 export class Pool {
-    /**
-     * @param {number} targetCount - Number of desired workers
-     */
+    /** @param {number?} targetCount - Number of desired workers */
     constructor(targetCount) {
         /** @type {Set<WorkerEntry>} */
         this.workers = new Set();
         /** @type {Map<string, JobEntry>} */
         this.activeJobs = new Map();
+
+        this.capacity = 0;
 
         const count = targetCount ?? cpus().length;
         for (let i = 0; i < count; i++) this.createWorker();
@@ -44,6 +44,7 @@ export class Pool {
             jobCount: 0,
             stalledJobs: new Set(),
         };
+        this.capacity += WORKER_CAPACITY;
         worker.on('message', (message) => this.handleWorkerMessage(entry, message));
         this.workers.add(entry);
     }
@@ -61,6 +62,7 @@ export class Pool {
         }
         clearTimeout(jobEntry.timer);
         workerEntry.capacity += jobEntry.size;
+        this.capacity += jobEntry.size;
         workerEntry.jobCount -= 1;
 
         // If this job was previously marked as stalled, unmark it.
@@ -83,6 +85,7 @@ export class Pool {
 
         // Remove and replace this worker in the pool (if it wasn’t already).
         if (this.workers.delete(workerEntry)) this.createWorker();
+        this.capacity -= workerEntry.capacity;
 
         // If this is the last job in this worker, terminate it.
         this.terminateIfEmpty(workerEntry);
@@ -107,19 +110,6 @@ export class Pool {
     }
 
     /**
-     * Reports total spare capacity across all workers
-     * @param {number} size - Size of the job to dispatch
-     * @returns {number} Number of jobs that there is capacity for
-     */
-    getCapacity(size) {
-        let total = 0;
-        for (const entry of this.workers) {
-            total += entry.capacity / size;
-        }
-        return total;
-    }
-
-    /**
      * Processes a job to the most free worker
      * @param {string} handlerPath
      * @param {Job} job
@@ -127,7 +117,7 @@ export class Pool {
      * @param {number} timeout - Maximum time in ms
      * @returns {Promise<DoneMessage>}
      */
-    async process(handlerPath, job, size, timeout) {
+    process(handlerPath, job, size, timeout) {
         // Find worker with most capacity
         let workerEntry = null;
         for (const entry of this.workers) {
@@ -141,6 +131,7 @@ export class Pool {
         return new Promise((resolve, reject) => {
             this.activeJobs.set(job.id, { resolve, reject, size, timer });
             workerEntry.capacity -= size;
+            this.capacity -= size;
             workerEntry.jobCount += 1;
             workerEntry.worker.postMessage({ op: 'exec', handlerPath, job });
         });
