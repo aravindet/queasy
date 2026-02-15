@@ -22,7 +22,7 @@ describe('Client heartbeat', () => {
     });
 
     afterEach(async () => {
-        client.close();
+        await client.close();
         const keys = await redis.keys(`{${QUEUE_NAME}}*`);
         if (keys.length > 0) await redis.del(keys);
         await redis.quit();

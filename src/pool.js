@@ -144,11 +144,8 @@ export class Pool {
     /**
      * Terminates all workers
      */
-    close() {
-        for (const { worker } of this.workers) {
-            worker.terminate();
-        }
-
+    async close() {
+        await Promise.all([...this.workers].map(async ({ worker }) => worker.terminate()));
         for (const [jobId, { reject, timer }] of this.activeJobs.entries()) {
             clearTimeout(timer);
             reject({

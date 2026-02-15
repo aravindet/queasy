@@ -137,7 +137,7 @@ export class Client extends EventEmitter {
         if (!bumped) {
             // This client’s lock was lost and its jobs retried.
             // We must stop processing jobs here to avoid duplication.
-            this.close();
+            await this.close();
             this.emit('disconnected', 'Lost locks, possible main thread freeze');
         }
     }
@@ -145,9 +145,9 @@ export class Client extends EventEmitter {
     /**
      * This marks this as disconnected.
      */
-    close() {
-        if (this.pool) this.pool.close();
-        if (this.manager) this.manager.close();
+    async close() {
+        if (this.pool) await this.pool.close();
+        if (this.manager) await this.manager.close();
         this.queues = {};
         this.pool = undefined;
         this.disconnected = true;

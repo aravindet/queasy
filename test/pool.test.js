@@ -116,7 +116,7 @@ describe('Pool stall and timeout', () => {
     });
 
     afterEach(async () => {
-        client.close();
+        await client.close();
         const keys = await redis.keys(`{${QUEUE_NAME}}*`);
         if (keys.length > 0) await redis.del(keys);
         await redis.quit();
@@ -148,7 +148,7 @@ describe('Pool stall and timeout', () => {
         const { promise } = await q.dequeue(1);
 
         // Close the client immediately while job is active
-        client.close();
+        await client.close();
 
         // The promise should resolve (the rejection gets handled by the catch block in dequeue)
         await promise;
