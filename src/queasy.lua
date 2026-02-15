@@ -250,13 +250,20 @@ end
 local function bump(queue_key, client_id, now, expiry)
     local expiry_key = get_expiry_key(queue_key)
 
-    -- Update expiry if client exists, and return number of rows changed (0 or 1)
-    local res = redis.call('ZADD', expiry_key, 'XX', 'CH', expiry, client_id)
+    -- Check if this client exists in expiry set
+    -- This can’t be skipped in favour of ZADD XX CH — when a client's new expiry
+    -- is the same as the old one, XX CH returns 0 but we need it to return 1
+    if not redis.call('ZSCORE', expiry_key, client_id) then
+        return 0
+    end
+
+    -- Update expiry
+    redis.call('ZADD', expiry_key, 'XX', expiry, client_id)
 
     -- Sweep stalled clients
     sweep(queue_key, now)
 
-    return res
+    return 1
 end
 
 -- Register: queasy_dispatch
