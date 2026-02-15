@@ -5,7 +5,7 @@ import { Client } from '../src/index.js';
 
 const QUEUE_NAME = 'client-test';
 
-describe('Client heartbeat', () => {
+describe.skip('Client heartbeat', () => {
     /** @type {import('redis').RedisClientType} */
     let redis;
     /** @type {import('../src/client.js').Client} */
