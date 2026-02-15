@@ -2,6 +2,92 @@ import assert from 'node:assert';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import { createClient } from 'redis';
 import { Client } from '../src/index.js';
+import { Pool } from '../src/pool.js';
+
+describe('Pool unit tests', () => {
+    /** Helper to create a fake job entry with a no-op timer */
+    function fakeJobEntry(size = 10) {
+        const timer = setTimeout(() => {}, 0);
+        return { resolve: () => {}, reject: () => {}, size, timer };
+    }
+
+    it('should warn and return on message with unknown job ID', () => {
+        const pool = new Pool(1);
+        const warn = mock.method(console, 'warn');
+        const workerEntry = pool.workers.values().next().value;
+        pool.handleWorkerMessage(workerEntry, { op: 'done', jobId: 'unknown' });
+        assert.equal(warn.mock.callCount(), 1);
+        warn.mock.restore();
+        pool.close();
+    });
+
+    it('should unmark stalled jobs when they complete', () => {
+        const pool = new Pool(1);
+        const workerEntry = pool.workers.values().next().value;
+        const jobId = 'stalled-job';
+
+        pool.activeJobs.set(jobId, fakeJobEntry());
+        workerEntry.jobCount = 1;
+        workerEntry.stalledJobs.add(jobId);
+
+        pool.handleWorkerMessage(workerEntry, { op: 'done', jobId });
+
+        assert.equal(workerEntry.stalledJobs.has(jobId), false);
+        pool.close();
+    });
+
+    it('should call terminateIfEmpty when worker is no longer in pool', () => {
+        const pool = new Pool(1);
+        const workerEntry = pool.workers.values().next().value;
+        const jobId = 'orphan-job';
+
+        // Remove the worker from the pool (as handleTimeout would)
+        pool.workers.delete(workerEntry);
+
+        pool.activeJobs.set(jobId, fakeJobEntry());
+        workerEntry.jobCount = 1;
+        workerEntry.stalledJobs.add(jobId);
+
+        // Message arrives for the orphaned worker — should trigger terminateIfEmpty
+        pool.handleWorkerMessage(workerEntry, { op: 'done', jobId });
+
+        assert.equal(pool.activeJobs.has(jobId), false);
+        pool.close();
+    });
+
+    it('should not replace worker in handleTimeout if already removed', () => {
+        const pool = new Pool(1);
+        const workerEntry = pool.workers.values().next().value;
+
+        const entry = fakeJobEntry();
+        pool.activeJobs.set('j1', entry);
+        workerEntry.jobCount = 1;
+
+        // Remove the worker first (simulating a prior timeout)
+        pool.workers.delete(workerEntry);
+        const workerCountBefore = pool.workers.size;
+
+        pool.handleTimeout(workerEntry, 'j1');
+        clearTimeout(entry.timer);
+
+        assert.equal(pool.workers.size, workerCountBefore);
+        pool.close();
+    });
+
+    it('should not terminate worker in terminateIfEmpty if non-stalled jobs remain', async () => {
+        const pool = new Pool(1);
+        const workerEntry = pool.workers.values().next().value;
+
+        // 2 jobs active, only 1 stalled — should not terminate
+        workerEntry.jobCount = 2;
+        workerEntry.stalledJobs.add('stalled-1');
+
+        await pool.terminateIfEmpty(workerEntry);
+
+        assert.equal(workerEntry.stalledJobs.size, 1);
+        pool.close();
+    });
+});
 
 const QUEUE_NAME = 'pool-test';
 
