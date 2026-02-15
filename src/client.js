@@ -1,3 +1,4 @@
+import EventEmitter from 'node:events';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,12 +67,13 @@ export function parseJob(jobArray) {
     };
 }
 
-export class Client {
+export class Client extends EventEmitter {
     /**
      * @param {RedisClient} redis - Redis client
      * @param {number?} workerCount - Allow this client to dequeue jobs.
      */
     constructor(redis, workerCount) {
+        super();
         this.redis = redis;
         this.clientId = generateId();
 
@@ -87,6 +89,7 @@ export class Client {
         // before any subsequent fCalls from user code.
         installLuaFunctions(this.redis).then((disconnect) => {
             this.disconnected = disconnect;
+            if (disconnect) this.emit('disconnected', 'Redis has incompatible queasy version.');
         });
     }
 
@@ -108,17 +111,6 @@ export class Client {
     }
 
     /**
-     * This helps tests exit cleanly.
-     */
-    close() {
-        if (this.pool) this.pool.close();
-        if (this.manager) this.manager.close();
-        this.queues = {};
-        this.pool = undefined;
-        this.disconnected = true;
-    }
-
-    /**
      * Schedule the next bump timer
      * @param {string} key
      */
@@ -137,10 +129,28 @@ export class Client {
         this.scheduleBump(key);
         const now = Date.now();
         const expiry = now + HEARTBEAT_TIMEOUT;
-        await this.redis.fCall('queasy_bump', {
+        const bumped = await this.redis.fCall('queasy_bump', {
             keys: [key],
             arguments: [this.clientId, String(now), String(expiry)],
         });
+
+        if (!bumped) {
+            // This client’s lock was lost and its jobs retried.
+            // We must stop processing jobs here to avoid duplication.
+            this.close();
+            this.emit('disconnected', 'Lost locks, possible main thread freeze');
+        }
+    }
+
+    /**
+     * This marks this as disconnected.
+     */
+    close() {
+        if (this.pool) this.pool.close();
+        if (this.manager) this.manager.close();
+        this.queues = {};
+        this.pool = undefined;
+        this.disconnected = true;
     }
 
     /**
