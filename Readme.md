@@ -13,7 +13,7 @@ A Redis-backed job queue for Node.js, featuring (in comparison with design inspi
 
 ### Terminology
 
-A _client_ is an instance of Quesy that connects to a Redis database. A _job_ is the basic unit of work that is _dispatched_ into a _queue_.
+A _client_ is an instance of Queasy that connects to a Redis database. A _job_ is the basic unit of work that is _dispatched_ into a _queue_.
 
 A _handler_ is JavaScript code that performs work. There are two kinds of handlers: _task handlers_, which process jobs, and _fail handlers_, which are invoked when a job fails permanently. Handlers run on _workers_, which are Node.js worker threads. By default, a Queasy client automatically creates one worker per CPU.
 
@@ -96,6 +96,7 @@ The following options control retry behavior:
 - `maxBackoff`: number; default: 300,000
 - `size`: number; default: 10
 - `timeout`: number; in milliseconds; default: 60,000
+- `priority`: number; higher values are given preference; default: 100
 
 Additional options affect failure handling:
 - `failHandler`: The path to a JavaScript module that exports the handler for failure jobs
