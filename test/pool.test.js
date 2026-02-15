@@ -11,10 +11,18 @@ describe('Pool unit tests', () => {
         return { resolve: () => {}, reject: () => {}, size, timer };
     }
 
+    /** @param {Pool} pool */
+    function getWorker(pool) {
+        const entry = /** @type {import('../src/pool.js').WorkerEntry} */ (
+            pool.workers.values().next().value
+        );
+        return entry;
+    }
+
     it('should warn and return on message with unknown job ID', () => {
         const pool = new Pool(1);
         const warn = mock.method(console, 'warn');
-        const workerEntry = pool.workers.values().next().value;
+        const workerEntry = getWorker(pool);
         pool.handleWorkerMessage(workerEntry, { op: 'done', jobId: 'unknown' });
         assert.equal(warn.mock.callCount(), 1);
         warn.mock.restore();
@@ -23,7 +31,7 @@ describe('Pool unit tests', () => {
 
     it('should unmark stalled jobs when they complete', () => {
         const pool = new Pool(1);
-        const workerEntry = pool.workers.values().next().value;
+        const workerEntry = getWorker(pool);
         const jobId = 'stalled-job';
 
         pool.activeJobs.set(jobId, fakeJobEntry());
@@ -38,7 +46,7 @@ describe('Pool unit tests', () => {
 
     it('should call terminateIfEmpty when worker is no longer in pool', () => {
         const pool = new Pool(1);
-        const workerEntry = pool.workers.values().next().value;
+        const workerEntry = getWorker(pool);
         const jobId = 'orphan-job';
 
         // Remove the worker from the pool (as handleTimeout would)
@@ -57,7 +65,7 @@ describe('Pool unit tests', () => {
 
     it('should not replace worker in handleTimeout if already removed', () => {
         const pool = new Pool(1);
-        const workerEntry = pool.workers.values().next().value;
+        const workerEntry = getWorker(pool);
 
         const entry = fakeJobEntry();
         pool.activeJobs.set('j1', entry);
@@ -76,7 +84,7 @@ describe('Pool unit tests', () => {
 
     it('should not terminate worker in terminateIfEmpty if non-stalled jobs remain', async () => {
         const pool = new Pool(1);
-        const workerEntry = pool.workers.values().next().value;
+        const workerEntry = getWorker(pool);
 
         // 2 jobs active, only 1 stalled — should not terminate
         workerEntry.jobCount = 2;

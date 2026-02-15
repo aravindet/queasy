@@ -1,9 +1,9 @@
 /**
  * Handler that always succeeds
- * @param {any} data - Job data
- * @param {import('../../src/types.js').Job} job - Job metadata
+ * @param {any} _data - Job data
+ * @param {import('../../src/types.js').Job} _job - Job metadata
  */
-export async function handle(data, job) {
+export async function handle(_data, _job) {
     // Job succeeds immediately
     return;
 }

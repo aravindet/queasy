@@ -18,13 +18,12 @@ describe('Manager unit tests', () => {
     }
 
     /**
-     * @param {object} [overrides]
+     * @param {{ handlerOptions?: Partial<import('../src/types.js').HandlerOptions>, dequeue?: import('node:test').Mock<any> }} [overrides]
      */
     function mockQueue(overrides = {}) {
         return /** @type {import('../src/queue.js').ProcessingQueue} */ ({
             handlerOptions: { size: 10, priority: 100, ...overrides.handlerOptions },
             dequeue: overrides.dequeue ?? mock.fn(async () => ({ count: 0 })),
-            ...overrides,
         });
     }
 
@@ -42,7 +41,7 @@ describe('Manager unit tests', () => {
         // Wait for next() to run (addQueue calls next via setTimeout)
         await new Promise((r) => setTimeout(r, 50));
         // dequeue should NOT have been called since capacity (5) < size (10)
-        assert.equal(q.dequeue.mock.callCount(), 0);
+        assert.equal(/** @type {import('node:test').Mock<any>} */ (q.dequeue).mock.callCount(), 0);
         mgr.close();
     });
 
