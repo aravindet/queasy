@@ -1,5 +1,5 @@
 import EventEmitter from 'node:events';
-import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getEnvironmentData } from 'node:worker_threads';
@@ -10,6 +10,10 @@ import { Queue } from './queue.js';
 import { compareSemver, generateId, parseVersion } from './utils.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const luaScript = readFileSync(join(__dirname, 'queasy.lua'), 'utf8').replace(
+    '__QUEASY_VERSION__',
+    LUA_FUNCTIONS_VERSION
+);
 
 /**
  * Check the installed version and load our Lua functions if needed.
@@ -26,9 +30,6 @@ async function installLuaFunctions(redis) {
 
     // No script installed or our version is later
     if (compareSemver(availableVersion, installedVersion) > 0) {
-        // Load Lua script and stamp version
-        const luaScriptTemplate = await readFile(join(__dirname, 'queasy.lua'), 'utf8');
-        const luaScript = luaScriptTemplate.replace('__QUEASY_VERSION__', LUA_FUNCTIONS_VERSION);
         await redis.sendCommand(['FUNCTION', 'LOAD', 'REPLACE', luaScript]);
         return false;
     }
@@ -85,7 +86,8 @@ export class Client extends EventEmitter {
         this.pool = !inWorker && workerCount !== 0 ? new Pool(workerCount) : undefined;
         if (this.pool) this.manager = new Manager(this.pool);
 
-        // Not awaited — Redis' single-threaded ordering ensures this completes
+        // Not awaited — the Lua script is read synchronously at module load,
+        // so Redis' single-threaded ordering ensures the FUNCTION LOAD completes
         // before any subsequent fCalls from user code.
         installLuaFunctions(this.redis).then((disconnect) => {
             this.disconnected = disconnect;
