@@ -14,10 +14,8 @@ describe('Client heartbeat', () => {
     beforeEach(async () => {
         redis = createClient();
         await redis.connect();
-        const keys = await redis.keys(`{${QUEUE_NAME}}*`);
-        if (keys.length > 0) await redis.del(keys);
-
         client = new Client(redis, 1);
+        client.scheduleBump = mock.fn();
         if (client.manager) client.manager.addQueue = mock.fn();
     });
 
@@ -43,7 +41,7 @@ describe('Client heartbeat', () => {
 
         // Expiry key should have our client's entry
         const expiryScore = await redis.zScore(`{${QUEUE_NAME}}:expiry`, client.clientId);
-        assert.ok(expiryScore !== null, 'Expiry entry should exist after bump');
+        assert.ok(expiryScore !== null, 'Expiry entry should exist after dequeue');
         assert.ok(expiryScore > Date.now(), 'Expiry should be in the future');
     });
 });

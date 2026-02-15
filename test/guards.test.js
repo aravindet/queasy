@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import { createClient } from 'redis';
 import { Client } from '../src/index.js';
 
-describe.skip('Client disconnect guard', () => {
+describe('Client disconnect guard', () => {
     /** @type {import('redis').RedisClientType} */
     let redis;
     /** @type {import('../src/client.js').Client} */
