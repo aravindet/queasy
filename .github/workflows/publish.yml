@@ -28,6 +28,11 @@ jobs:
         id: version
         run: echo "version=$(node -e "console.log(require('./package.json').version)")" >> "$GITHUB_OUTPUT"
 
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: Create and push tag
         run: |
           git tag "v${{ steps.version.outputs.version }}"
@@ -37,8 +42,3 @@ jobs:
         run: gh release create "v${{ steps.version.outputs.version }}" --generate-notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Publish to npm
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
