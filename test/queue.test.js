@@ -27,7 +27,7 @@ describe('Queue E2E', () => {
 
     afterEach(async () => {
         // Terminate worker threads to allow clean exit
-        client.close();
+        await client.close();
 
         // Clean up all queue data
         const keys = await redis.keys(`{${QUEUE_NAME}}*`);

@@ -1,16 +1,42 @@
+import EventEmitter from 'node:events';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getEnvironmentData } from 'node:worker_threads';
-import { HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT } from './constants.js';
+import { HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT, LUA_FUNCTIONS_VERSION } from './constants.js';
 import { Manager } from './manager.js';
 import { Pool } from './pool.js';
 import { Queue } from './queue.js';
-import { generateId } from './utils.js';
+import { compareSemver, generateId, parseVersion } from './utils.js';
 
-// Load Lua script
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const luaScript = readFileSync(join(__dirname, 'queasy.lua'), 'utf8');
+const luaScript = readFileSync(join(__dirname, 'queasy.lua'), 'utf8').replace(
+    '__QUEASY_VERSION__',
+    LUA_FUNCTIONS_VERSION
+);
+
+/**
+ * Check the installed version and load our Lua functions if needed.
+ * Returns true if this client should be disconnected (newer major on server).
+ * @param {RedisClient} redis
+ * @returns {Promise<boolean>} Whether to disconnect.
+ */
+async function installLuaFunctions(redis) {
+    const installedVersionString = /** @type {string?} */ (
+        await redis.fCall('queasy_version', { keys: [], arguments: [] }).catch(() => null)
+    );
+    const installedVersion = parseVersion(installedVersionString);
+    const availableVersion = parseVersion(LUA_FUNCTIONS_VERSION);
+
+    // No script installed or our version is later
+    if (compareSemver(availableVersion, installedVersion) > 0) {
+        await redis.sendCommand(['FUNCTION', 'LOAD', 'REPLACE', luaScript]);
+        return false;
+    }
+
+    // Keep the installed (newer) version. Return disconnect=true if the major versions disagree
+    return installedVersion[0] > availableVersion[0];
+}
 
 /** @typedef {import('redis').RedisClientType} RedisClient */
 /** @typedef {import('./types').Job} Job */
@@ -42,26 +68,33 @@ export function parseJob(jobArray) {
     };
 }
 
-export class Client {
+export class Client extends EventEmitter {
     /**
      * @param {RedisClient} redis - Redis client
      * @param {number?} workerCount - Allow this client to dequeue jobs.
+     * @param {((client: Client) => any)} [callback] - Callback when client is ready
      */
-    constructor(redis, workerCount) {
+    constructor(redis, workerCount, callback) {
+        super();
         this.redis = redis;
         this.clientId = generateId();
 
         /** @type {Record<string, QueueEntry>} */
         this.queues = {};
+        this.disconnected = false;
 
         const inWorker = getEnvironmentData('queasy_worker_context');
         this.pool = !inWorker && workerCount !== 0 ? new Pool(workerCount) : undefined;
         if (this.pool) this.manager = new Manager(this.pool);
 
-        // We are not awaiting this; we rely on Redis’ single-threaded blocking
-        // nature to ensure that this load completes before other Redis commands
-        // are processed.
-        this.redis.sendCommand(['FUNCTION', 'LOAD', 'REPLACE', luaScript]);
+        // Not awaited — the Lua script is read synchronously at module load,
+        // so Redis' single-threaded ordering ensures the FUNCTION LOAD completes
+        // before any subsequent fCalls from user code.
+        installLuaFunctions(this.redis).then((disconnect) => {
+            this.disconnected = disconnect;
+            if (disconnect) this.emit('disconnected', 'Redis has incompatible queasy version.');
+            else if (callback) callback(this);
+        });
     }
 
     /**
@@ -70,6 +103,8 @@ export class Client {
      * @returns {Queue} Queue object with dispatch, cancel, and listen methods
      */
     queue(name, isKey = false) {
+        if (this.disconnected) throw new Error('Can’t add queue: client disconnected');
+
         const key = isKey ? name : `{${name}}`;
         if (!this.queues[key]) {
             this.queues[key] = /** @type {QueueEntry} */ ({
@@ -77,20 +112,6 @@ export class Client {
             });
         }
         return this.queues[key].queue;
-    }
-
-    /**
-     * This helps tests exit cleanly.
-     */
-    close() {
-        for (const name in this.queues) {
-            this.queues[name].queue.close();
-            clearTimeout(this.queues[name].bumpTimer);
-        }
-        if (this.pool) this.pool.close();
-        if (this.manager) this.manager.close();
-        this.queues = {};
-        this.pool = undefined;
     }
 
     /**
@@ -107,14 +128,33 @@ export class Client {
      * @param {string} key
      */
     async bump(key) {
+        if (this.disconnected) return;
         // Set up the next bump first, in case this
         this.scheduleBump(key);
         const now = Date.now();
         const expiry = now + HEARTBEAT_TIMEOUT;
-        await this.redis.fCall('queasy_bump', {
+        const bumped = await this.redis.fCall('queasy_bump', {
             keys: [key],
             arguments: [this.clientId, String(now), String(expiry)],
         });
+
+        if (!bumped) {
+            // This client’s lock was lost and its jobs retried.
+            // We must stop processing jobs here to avoid duplication.
+            await this.close();
+            this.emit('disconnected', 'Lost locks, possible main thread freeze');
+        }
+    }
+
+    /**
+     * This marks this as disconnected.
+     */
+    async close() {
+        if (this.pool) await this.pool.close();
+        if (this.manager) await this.manager.close();
+        this.queues = {};
+        this.pool = undefined;
+        this.disconnected = true;
     }
 
     /**

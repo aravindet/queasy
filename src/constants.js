@@ -9,6 +9,7 @@ export const DEFAULT_RETRY_OPTIONS = {
     maxBackoff: 300_000, // 5 minutes
     size: 10,
     timeout: 60_000, // 1 minute
+    priority: 100,
 };
 
 /** @type {Required<JobUpdateOptions>} */
@@ -26,8 +27,10 @@ export const FAILJOB_RETRY_OPTIONS = {
     maxBackoff: 900_000, // 15 minutes
     size: 2,
     timeout: 60_000,
+    priority: 100,
 };
 
+export const LUA_FUNCTIONS_VERSION = '1.0';
 export const HEARTBEAT_INTERVAL = 5000; // 5 seconds
 export const HEARTBEAT_TIMEOUT = 10000; // 10 seconds
 export const WORKER_CAPACITY = 10;

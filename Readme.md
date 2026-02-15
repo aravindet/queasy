@@ -98,7 +98,7 @@ The following options control retry behavior:
 - `maxBackoff`: number; default: 300,000
 - `size`: number; default: 10
 - `timeout`: number; in milliseconds; default: 60,000
-- `priority`: number; higher numbers are processed first
+- `priority`: number; higher values are given preference; default: 100
 
 Additional options affect failure handling:
 - `failHandler`: The path to a JavaScript module that exports the handler for failure jobs

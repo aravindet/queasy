@@ -3,8 +3,13 @@
  * @param {any} data - Job data
  * @param {import('../../src/types.js').Job} job - Job metadata
  */
+/** @type {{ data: any, job: import('../../src/types.js').Job }[]} */
 export const receivedJobs = [];
 
+/**
+ * @param {any} data - Job data
+ * @param {import('../../src/types.js').Job} job - Job metadata
+ */
 export async function handle(data, job) {
     receivedJobs.push({ data, job });
 }

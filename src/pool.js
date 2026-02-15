@@ -1,4 +1,4 @@
-import { cpus } from 'node:os';
+import { availableParallelism } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { WORKER_CAPACITY } from './constants.js';
 import { generateId } from './utils.js';
@@ -31,7 +31,7 @@ export class Pool {
 
         this.capacity = 0;
 
-        const count = targetCount ?? cpus().length;
+        const count = targetCount ?? availableParallelism();
         for (let i = 0; i < count; i++) this.createWorker();
     }
 
@@ -144,11 +144,8 @@ export class Pool {
     /**
      * Terminates all workers
      */
-    close() {
-        for (const { worker } of this.workers) {
-            worker.terminate();
-        }
-
+    async close() {
+        await Promise.all([...this.workers].map(async ({ worker }) => worker.terminate()));
         for (const [jobId, { reject, timer }] of this.activeJobs.entries()) {
             clearTimeout(timer);
             reject({

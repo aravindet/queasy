@@ -281,10 +281,12 @@ describe('Redis Lua functions', () => {
 
             // Dequeue
             const expiryTime = now + 10000;
-            const result = await redis.fCall('queasy_dequeue', {
-                keys: [QUEUE_NAME],
-                arguments: [clientId, now.toString(), expiryTime.toString(), '10'],
-            });
+            const result = /** @type {string[][]} */ (
+                await redis.fCall('queasy_dequeue', {
+                    keys: [QUEUE_NAME],
+                    arguments: [clientId, now.toString(), expiryTime.toString(), '10'],
+                })
+            );
 
             assert.equal(result.length, 2);
             assert.deepEqual(result[0], ['id', jobId1]);
@@ -316,10 +318,12 @@ describe('Redis Lua functions', () => {
             await redis.hSet(`${QUEUE_NAME}:waiting_job:${jobId}`, 'id', jobId);
 
             // Try to dequeue
-            const result = await redis.fCall('queasy_dequeue', {
-                keys: [QUEUE_NAME],
-                arguments: [clientId, now.toString(), String(now + 10000), '10'],
-            });
+            const result = /** @type {string[][]} */ (
+                await redis.fCall('queasy_dequeue', {
+                    keys: [QUEUE_NAME],
+                    arguments: [clientId, now.toString(), String(now + 10000), '10'],
+                })
+            );
 
             assert.equal(result.length, 0);
         });
@@ -334,10 +338,12 @@ describe('Redis Lua functions', () => {
             await redis.hSet(`${QUEUE_NAME}:waiting_job:${jobId}`, 'id', jobId);
 
             // Try to dequeue
-            const result = await redis.fCall('queasy_dequeue', {
-                keys: [QUEUE_NAME],
-                arguments: [clientId, now.toString(), String(now + 10000), '10'],
-            });
+            const result = /** @type {string[][]} */ (
+                await redis.fCall('queasy_dequeue', {
+                    keys: [QUEUE_NAME],
+                    arguments: [clientId, now.toString(), String(now + 10000), '10'],
+                })
+            );
 
             assert.equal(result.length, 0);
         });
