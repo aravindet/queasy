@@ -72,8 +72,9 @@ export class Client extends EventEmitter {
     /**
      * @param {RedisClient} redis - Redis client
      * @param {number?} workerCount - Allow this client to dequeue jobs.
+     * @param {((client: Client) => any)} [callback] - Callback when client is ready
      */
-    constructor(redis, workerCount) {
+    constructor(redis, workerCount, callback) {
         super();
         this.redis = redis;
         this.clientId = generateId();
@@ -92,6 +93,7 @@ export class Client extends EventEmitter {
         installLuaFunctions(this.redis).then((disconnect) => {
             this.disconnected = disconnect;
             if (disconnect) this.emit('disconnected', 'Redis has incompatible queasy version.');
+            else if (callback) callback(this);
         });
     }
 

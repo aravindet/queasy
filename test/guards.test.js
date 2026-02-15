@@ -12,7 +12,9 @@ describe('Client disconnect guard', () => {
     beforeEach(async () => {
         redis = createClient();
         await redis.connect();
-        client = new Client(redis, 0);
+        return new Promise((res) => {
+            client = new Client(redis, 0, res);
+        });
     });
 
     afterEach(async () => {
