@@ -6,7 +6,7 @@
     "type": "module",
     "scripts": {
         "test": "node --test",
-        "test:coverage": "node --test --experimental-test-coverage",
+        "test:coverage": "node --test --experimental-test-coverage --test-coverage-lines=96",
         "test:watch": "node --test --watch",
         "lint": "biome check .",
         "lint:fix": "biome check --write .",

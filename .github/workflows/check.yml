@@ -37,14 +37,7 @@ jobs:
         run: npm run typecheck
 
       - name: Test with coverage
-        run: |
-          npm run test:coverage 2>&1 | tee coverage-output.txt
-          LINE_COV=$(grep 'all files' coverage-output.txt | awk -F'|' '{print $2}' | tr -d ' %')
-          echo "Line coverage: ${LINE_COV}%"
-          if [ "$(echo "$LINE_COV < 95" | bc -l)" -eq 1 ]; then
-            echo "::error::Line coverage ${LINE_COV}% is below the 95% threshold"
-            exit 1
-          fi
+        run: npm run test:coverage
 
       - name: Check version is not already tagged
         run: |
