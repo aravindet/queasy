@@ -16,6 +16,10 @@
         "docker:down": "docker compose down",
         "docker:logs": "docker compose logs -f"
     },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/aravindet/queasy.git"
+    },
     "keywords": [
         "queue",
         "redis",
