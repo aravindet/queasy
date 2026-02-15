@@ -1,4 +1,4 @@
-import { cpus } from 'node:os';
+import { availableParallelism } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { WORKER_CAPACITY } from './constants.js';
 import { generateId } from './utils.js';
@@ -31,7 +31,7 @@ export class Pool {
 
         this.capacity = 0;
 
-        const count = targetCount ?? cpus().length;
+        const count = targetCount ?? availableParallelism();
         for (let i = 0; i < count; i++) this.createWorker();
     }
 

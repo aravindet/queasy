@@ -50,7 +50,8 @@ export class Queue {
      * @returns {Promise<void>}
      */
     async listen(handlerPath, { failHandler, failRetryOptions, ...retryOptions } = {}) {
-        if (!this.pool || !this.manager) throw new Error('Can’t listen on a non-processing client');
+        if (this.client.disconnected) throw new Error('Can’t listen: client disconnected');
+        if (!this.pool || !this.manager) throw new Error('Can’t listen: non-processing client');
 
         this.handlerPath = handlerPath;
         this.handlerOptions = { ...DEFAULT_RETRY_OPTIONS, ...retryOptions };
@@ -76,6 +77,7 @@ export class Queue {
      * @returns {Promise<string>} Job ID
      */
     async dispatch(data, options = {}) {
+        if (this.client.disconnected) throw new Error('Can’t dispatch: client disconnected');
         const {
             id = generateId(),
             runAt = 0,
@@ -94,6 +96,7 @@ export class Queue {
      * @returns {Promise<boolean>} True if job was cancelled
      */
     async cancel(id) {
+        if (this.client.disconnected) throw new Error('Can’t cancel: client disconnected');
         return await this.client.cancel(this.key, id);
     }
 
@@ -147,15 +150,5 @@ export class Queue {
         );
 
         return { count: jobs.length, promise };
-    }
-
-    /**
-     * Stop the dequeue interval and bump timer for this queue
-     */
-    close() {
-        // if (this.dequeueInterval) {
-        //     clearInterval(this.dequeueInterval);
-        //     this.dequeueInterval = undefined;
-        // }
     }
 }

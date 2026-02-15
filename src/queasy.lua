@@ -113,9 +113,6 @@ local function do_retry(queue_key, id, retry_at)
     return { ok = 'OK' }
 end
 
--- Forward declaration
-local sweep
-
 -- Helper: Clear active job and unblock waiting job
 local function finish(queue_key, id, client_id, now)
     local waiting_job_key = get_waiting_job_key(queue_key, id)
@@ -183,6 +180,33 @@ local function handle_stall(queue_key, id, retry_at)
     return do_retry(queue_key, id, retry_at)
 end
 
+-- Sweep stalled clients
+local function sweep(queue_key, now)
+    local expiry_key = get_expiry_key(queue_key)
+
+    -- Find first stalled client
+    local stalled = redis.call('ZRANGEBYSCORE', expiry_key, 0, now, 'LIMIT', 0, 1)
+
+    if #stalled == 0 then return 0 end
+
+    local stalled_client_id = stalled[1]
+    local checkouts_key = get_checkouts_key(queue_key, stalled_client_id)
+
+    -- Get all job IDs checked out by this client
+    -- RESP3 returns SMEMBERS as { set = { id1 = true, id2 = true, ... } }
+    local members_resp = redis.call('SMEMBERS', checkouts_key)
+
+    for id, _ in pairs(members_resp['set']) do
+        handle_stall(queue_key, id, 0)
+    end
+
+    -- Clean up the stalled client
+    redis.call('ZREM', expiry_key, stalled_client_id)
+    redis.call('DEL', checkouts_key)
+
+    return 1
+end
+
 -- Dequeue jobs from waiting queue
 local function dequeue(queue_key, client_id, now, expiry, limit)
     local expiry_key = get_expiry_key(queue_key)
@@ -226,50 +250,13 @@ end
 local function bump(queue_key, client_id, now, expiry)
     local expiry_key = get_expiry_key(queue_key)
 
-    -- Check if this client exists in expiry set
-    local existing = redis.call('ZSCORE', expiry_key, client_id)
-    if not existing then
-        return 0
-    end
-
-    -- Update expiry
-    redis.call('ZADD', expiry_key, 'XX', expiry, client_id)
+    -- Update expiry if client exists, and return number of rows changed (0 or 1)
+    local res = redis.call('ZADD', expiry_key, 'XX', 'CH', expiry, client_id)
 
     -- Sweep stalled clients
     sweep(queue_key, now)
 
-    return 1
-end
-
--- Sweep stalled clients
-sweep = function(queue_key, now)
-    local expiry_key = get_expiry_key(queue_key)
-
-    -- Find first stalled client
-    local stalled = redis.call('ZRANGEBYSCORE', expiry_key, 0, now, 'LIMIT', 0, 1)
-
-    if #stalled == 0 then
-        return {}
-    end
-
-    local stalled_client_id = stalled[1]
-    local checkouts_key = get_checkouts_key(queue_key, stalled_client_id)
-
-    -- Get all job IDs checked out by this client
-    -- RESP3 returns SMEMBERS as { set = { id1 = true, id2 = true, ... } }
-    local members_resp = redis.call('SMEMBERS', checkouts_key)
-    local processed_jobs = {}
-
-    for id, _ in pairs(members_resp['set']) do
-        handle_stall(queue_key, id, 0)
-        table.insert(processed_jobs, id)
-    end
-
-    -- Clean up the stalled client
-    redis.call('ZREM', expiry_key, stalled_client_id)
-    redis.call('DEL', checkouts_key)
-
-    return processed_jobs
+    return res
 end
 
 -- Register: queasy_dispatch
@@ -391,7 +378,7 @@ redis.register_function {
 redis.register_function {
     function_name = 'queasy_version',
     callback = function(keys, args)
-        return 1
+        return '__QUEASY_VERSION__'
     end,
     flags = {}
 }
