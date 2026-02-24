@@ -59,6 +59,21 @@ client.on('disconnected', (reason) => {
 	process.exit(1);
 });
 
+// Forward client lifecycle events to the orchestrator via IPC.
+// The orchestrator uses these to authoritatively track active jobs.
+client.on('dequeue', (queue, job) => {
+	process.send({ type: 'dequeue', queue, jobId: job.id, runAt: job.runAt });
+});
+client.on('finish', (queue, jobId) => {
+	process.send({ type: 'finish', queue, jobId });
+});
+client.on('retry', (queue, jobId) => {
+	process.send({ type: 'retry', queue, jobId });
+});
+client.on('fail', (queue, jobId) => {
+	process.send({ type: 'fail', queue, jobId });
+});
+
 // ── Queue setup ────────────────────────────────────────────────────────────────
 
 const periodicQueue  = client.queue('{fuzz}:periodic',  true);

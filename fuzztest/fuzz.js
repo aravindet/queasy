@@ -70,22 +70,40 @@ function violation(invariant, msg, data = {}) {
 
 // ── Invariant checks ───────────────────────────────────────────────────────────
 
-function onStart(event) {
-	const { id, queue, pid: pidStr, runAt: runAtStr, startedAt: startedAtStr } = event;
-	const pid = Number(pidStr);
-	const runAt = Number(runAtStr);
-	const startedAt = Number(startedAtStr);
+/**
+ * Called when a child process dequeues a job (via IPC).
+ * @param {number} pid
+ * @param {{queue: string, jobId: string, runAt: number}} msg
+ */
+function onIpcDequeue(pid, msg) {
+	const { jobId: id, queue, runAt } = msg;
 
-	// 1. Mutual exclusion
+	// Mutual exclusion: job must not already be active
 	if (activeJobs.has(id)) {
 		const existing = activeJobs.get(id);
-		violation('MutualExclusion', `Job ${id} started while already active`, {
+		violation('MutualExclusion', `Job ${id} dequeued while already active`, {
 			existing,
-			newStart: { queue, pid, startedAt },
+			newDequeue: { queue, pid },
 		});
 	}
 
-	// 2. No re-processing of succeeded jobs (except periodic which re-queues itself)
+	activeJobs.set(id, { queue, pid, startedAt: Date.now(), runAt });
+}
+
+/**
+ * Called when a child process finishes/retries/fails a job (via IPC).
+ * @param {string} jobId
+ */
+function onIpcJobDone(jobId) {
+	activeJobs.delete(jobId);
+}
+
+function onStart(event) {
+	const { id, queue, runAt: runAtStr, startedAt: startedAtStr } = event;
+	const runAt = Number(runAtStr);
+	const startedAt = Number(startedAtStr);
+
+	// No re-processing of succeeded jobs (except periodic which re-queues itself)
 	if (succeededJobs.has(id) && !id.startsWith('fuzz-periodic-')) {
 		violation('NoReprocess', `Job ${id} started after already succeeding`, {
 			queue,
@@ -93,7 +111,7 @@ function onStart(event) {
 		});
 	}
 
-	// 3. Scheduling: not before runAt
+	// Scheduling: not before runAt
 	if (runAt > 0 && startedAt < runAt - CLOCK_TOLERANCE_MS) {
 		violation('Scheduling', `Job ${id} started ${runAt - startedAt}ms too early`, {
 			queue,
@@ -103,7 +121,7 @@ function onStart(event) {
 		});
 	}
 
-	// 4. Priority ordering: no eligible lower-runAt job in same queue waiting
+	// Priority ordering: no eligible lower-runAt job in same queue waiting
 	const waiting = waitingByQueue.get(queue) ?? [];
 	for (const w of waiting) {
 		if (w.id === id) continue;
@@ -120,7 +138,6 @@ function onStart(event) {
 		}
 	}
 
-	activeJobs.set(id, { queue, pid, startedAt, runAt });
 	lastStartPerQueue.set(queue, startedAt);
 
 	// Remove from waiting list
@@ -130,14 +147,7 @@ function onStart(event) {
 }
 
 function onFinish(event) {
-	const { id } = event;
-	activeJobs.delete(id);
-	succeededJobs.add(id);
-}
-
-function onFail(event) {
-	const { id } = event;
-	activeJobs.delete(id);
+	succeededJobs.add(event.id);
 }
 
 /**
@@ -205,8 +215,6 @@ function handleEvent(event) {
 		onStart(event);
 	} else if (type === 'finish') {
 		onFinish(event);
-	} else if (type === 'fail') {
-		onFail(event);
 	}
 }
 
@@ -237,6 +245,14 @@ const processes = new Set();
 function spawnProcess() {
 	const child = fork(join(__dirname, 'process.js'));
 	processes.add(child);
+
+	child.on('message', (msg) => {
+		if (msg.type === 'dequeue') {
+			onIpcDequeue(child.pid, msg);
+		} else if (msg.type === 'finish' || msg.type === 'retry' || msg.type === 'fail') {
+			onIpcJobDone(msg.jobId);
+		}
+	});
 
 	child.on('exit', (code, signal) => {
 		processes.delete(child);

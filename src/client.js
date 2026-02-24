@@ -93,7 +93,10 @@ export class Client extends EventEmitter {
         installLuaFunctions(this.redis).then((disconnect) => {
             this.disconnected = disconnect;
             if (disconnect) this.emit('disconnected', 'Redis has incompatible queasy version.');
-            else if (callback) callback(this);
+            else {
+                this.emit('connected');
+                if (callback) callback(this);
+            }
         });
     }
 
@@ -211,7 +214,9 @@ export class Client extends EventEmitter {
         // Heartbeats should start with the first dequeue.
         this.scheduleBump(key);
 
-        return /** @type Job[] */ (result.map((jobArray) => parseJob(jobArray)).filter(Boolean));
+        const jobs = /** @type Job[] */ (result.map((jobArray) => parseJob(jobArray)).filter(Boolean));
+        for (const job of jobs) this.emit('dequeue', key, job);
+        return jobs;
     }
 
     /**
@@ -223,6 +228,7 @@ export class Client extends EventEmitter {
             keys: [key],
             arguments: [jobId, this.clientId, String(Date.now())],
         });
+        this.emit('finish', key, jobId);
     }
 
     /**
@@ -242,6 +248,7 @@ export class Client extends EventEmitter {
                 String(Date.now()),
             ],
         });
+        this.emit('fail', key, jobId);
     }
 
     /**
@@ -254,5 +261,6 @@ export class Client extends EventEmitter {
             keys: [key],
             arguments: [jobId, this.clientId, String(retryAt), String(Date.now())],
         });
+        this.emit('retry', key, jobId);
     }
 }
