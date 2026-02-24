@@ -226,9 +226,8 @@ local function dequeue(queue_key, client_id, now, expiry, limit)
         table.insert(result, job)
     end
 
-    if #result > 0 then
-        redis.call('ZADD', expiry_key, expiry, client_id)
-    end
+    -- Add this client to queue and bump its expiry
+    redis.call('ZADD', expiry_key, expiry, client_id)
 
     -- Sweep stalled clients
     sweep(queue_key, now)

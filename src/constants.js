@@ -30,7 +30,7 @@ export const FAILJOB_RETRY_OPTIONS = {
     priority: 100,
 };
 
-export const LUA_FUNCTIONS_VERSION = '1.0';
+export const LUA_FUNCTIONS_VERSION = '1.0.1';
 export const HEARTBEAT_INTERVAL = 5000; // 5 seconds
 export const HEARTBEAT_TIMEOUT = 10000; // 10 seconds
 export const WORKER_CAPACITY = 10;
