@@ -1,3 +1,18 @@
+import type { RedisClientOptions, RedisClusterOptions } from 'redis';
+
+type SingleNodeOptions = Pick<
+    RedisClientOptions,
+    'url' | 'socket' | 'username' | 'password' | 'database'
+>;
+
+export type RedisOptions =
+    | SingleNodeOptions
+    | {
+          rootNodes: SingleNodeOptions[];
+          defaults?: Partial<SingleNodeOptions>;
+          nodeAddressMap?: RedisClusterOptions['nodeAddressMap'];
+      };
+
 /**
  * Core job identification and data
  */

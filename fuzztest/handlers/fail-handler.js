@@ -29,24 +29,24 @@ const periodicQueue = client.queue('{fuzz}:periodic', true);
  * @param {import('../../src/types.js').Job} job
  */
 export async function handle(data, job) {
-	const [originalId, originalData, error] = data;
+    const [originalId, originalData, error] = data;
 
-	await emitEvent(eventRedis, {
-		type: 'fail',
-		queue: 'fail',
-		id: originalId,
-		failJobId: job.id,
-		error: error?.message ?? String(error),
-	});
+    await emitEvent(eventRedis, {
+        type: 'fail',
+        queue: 'fail',
+        id: originalId,
+        failJobId: job.id,
+        error: error?.message ?? String(error),
+    });
 
-	// Re-dispatch periodic jobs so they continue indefinitely.
-	if (originalId.startsWith('fuzz-periodic-')) {
-		const delay = 1000 + Math.random() * 4000;
-		await periodicQueue.dispatch(originalData, {
-			id: originalId,
-			runAt: Date.now() + delay,
-			updateRunAt: true,
-			updateData: true,
-		});
-	}
+    // Re-dispatch periodic jobs so they continue indefinitely.
+    if (originalId.startsWith('fuzz-periodic-')) {
+        const delay = 1000 + Math.random() * 4000;
+        await periodicQueue.dispatch(originalData, {
+            id: originalId,
+            runAt: Date.now() + delay,
+            updateRunAt: true,
+            updateData: true,
+        });
+    }
 }

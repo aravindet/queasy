@@ -4,22 +4,17 @@ import { createClient } from 'redis';
 import { Client } from '../src/index.js';
 
 describe('Client disconnect guard', () => {
-    /** @type {import('redis').RedisClientType} */
-    let redis;
     /** @type {import('../src/client.js').Client} */
     let client;
 
-    beforeEach(async () => {
-        redis = createClient();
-        await redis.connect();
+    beforeEach(() => {
         return new Promise((res) => {
-            client = new Client(redis, 0, res);
+            client = new Client({}, 0, res);
         });
     });
 
     afterEach(async () => {
         await client.close();
-        await redis.quit();
     });
 
     it('should throw from queue() when disconnected', () => {
@@ -29,23 +24,18 @@ describe('Client disconnect guard', () => {
 });
 
 describe('Queue disconnect guards', () => {
-    /** @type {import('redis').RedisClientType} */
-    let redis;
     /** @type {import('../src/client.js').Client} */
     let client;
 
-    beforeEach(async () => {
-        redis = createClient();
-        await redis.connect();
-        client = new Client(redis, 1);
-        if (client.manager) client.manager.addQueue = mock.fn();
-        // Wait for installLuaFunctions to settle
-        await new Promise((r) => setTimeout(r, 50));
+    beforeEach(() => {
+        return new Promise((res) => {
+            client = new Client({}, 1, res);
+            if (client.manager) client.manager.addQueue = mock.fn();
+        });
     });
 
     afterEach(async () => {
         await client.close();
-        await redis.quit();
     });
 
     it('should throw from dispatch() when disconnected', async () => {
@@ -67,12 +57,10 @@ describe('Queue disconnect guards', () => {
     });
 
     it('should throw from listen() on non-processing client', async () => {
-        const nonProcessingClient = new Client(redis, 0);
-        // Wait for installLuaFunctions to settle
-        await new Promise((r) => setTimeout(r, 50));
+        const nonProcessingClient = await new Promise((res) => new Client({}, 0, res));
         const q = nonProcessingClient.queue('guard-test');
         await assert.rejects(() => q.listen('/some/handler.js'), /non-processing/);
-        await client.close();
+        await nonProcessingClient.close();
     });
 });
 
@@ -90,8 +78,10 @@ describe('Client bump lost lock', () => {
         const keys = await redis.keys(`{${QUEUE_NAME}}*`);
         if (keys.length > 0) await redis.del(keys);
 
-        client = new Client(redis, 1);
-        if (client.manager) client.manager.addQueue = mock.fn();
+        await new Promise((res) => {
+            client = new Client({}, 1, res);
+            if (client.manager) client.manager.addQueue = mock.fn();
+        });
     });
 
     afterEach(async () => {

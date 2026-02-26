@@ -9,37 +9,37 @@
  * - Prints a summary every 60 seconds and on SIGINT
  */
 
-import { createWriteStream } from 'node:fs';
 import { fork } from 'node:child_process';
+import { createWriteStream } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createClient } from 'redis';
 import { Client } from '../src/index.js';
-import { STREAM_KEY, readEvents } from './shared/stream.js';
+import { readEvents, STREAM_KEY } from './shared/stream.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Configuration ──────────────────────────────────────────────────────────────
 
-const NUM_PROCESSES            = 4;
-const NUM_PERIODIC_JOBS        = 5;
-const CRASH_INTERVAL_MS        = 30_000; // kill a random process this often
-const CLOCK_TOLERANCE_MS       = 200;    // allow this much early-start slop
-const STALL_THRESHOLD_MS       = 30_000; // no start event → progress violation
-const PRIORITY_LAG_MS          = 500;    // ordering slop between queues
+const NUM_PROCESSES = 4;
+const NUM_PERIODIC_JOBS = 5;
+const CRASH_INTERVAL_MS = 30_000; // kill a random process this often
+const CLOCK_TOLERANCE_MS = 200; // allow this much early-start slop
+const STALL_THRESHOLD_MS = 30_000; // no start event → progress violation
+const PRIORITY_LAG_MS = 500; // ordering slop between queues
 const PROCESS_RESTART_DELAY_MS = 500;
-const SUMMARY_INTERVAL_MS      = 60_000;
-const LOG_FILE                 = join(__dirname, '..', 'fuzz-output.log');
+const SUMMARY_INTERVAL_MS = 60_000;
+const LOG_FILE = join(__dirname, '..', 'fuzz-output.log');
 
 // ── Logging ────────────────────────────────────────────────────────────────────
 
 const logStream = createWriteStream(LOG_FILE, { flags: 'a' });
 
 function log(level, msg, data = {}) {
-	const entry = JSON.stringify({ time: new Date().toISOString(), level, msg, data });
-	if (level === 'error') process.stdout.write(`VIOLATION: ${entry}\n`);
-	else process.stdout.write(`${entry}\n`);
-	logStream.write(entry + '\n');
+    const entry = JSON.stringify({ time: new Date().toISOString(), level, msg, data });
+    if (level === 'error') process.stdout.write(`VIOLATION: ${entry}\n`);
+    else process.stdout.write(`${entry}\n`);
+    logStream.write(`${entry}\n`);
 }
 
 // ── Invariant state ────────────────────────────────────────────────────────────
@@ -64,8 +64,8 @@ let violationCount = 0;
 let eventCount = 0;
 
 function violation(invariant, msg, data = {}) {
-	violationCount++;
-	log('error', `[${invariant}] ${msg}`, data);
+    violationCount++;
+    log('error', `[${invariant}] ${msg}`, data);
 }
 
 // ── Invariant checks ───────────────────────────────────────────────────────────
@@ -76,18 +76,18 @@ function violation(invariant, msg, data = {}) {
  * @param {{queue: string, jobId: string, runAt: number}} msg
  */
 function onIpcDequeue(pid, msg) {
-	const { jobId: id, queue, runAt } = msg;
+    const { jobId: id, queue, runAt } = msg;
 
-	// Mutual exclusion: job must not already be active
-	if (activeJobs.has(id)) {
-		const existing = activeJobs.get(id);
-		violation('MutualExclusion', `Job ${id} dequeued while already active`, {
-			existing,
-			newDequeue: { queue, pid },
-		});
-	}
+    // Mutual exclusion: job must not already be active
+    if (activeJobs.has(id)) {
+        const existing = activeJobs.get(id);
+        violation('MutualExclusion', `Job ${id} dequeued while already active`, {
+            existing,
+            newDequeue: { queue, pid },
+        });
+    }
 
-	activeJobs.set(id, { queue, pid, startedAt: Date.now(), runAt });
+    activeJobs.set(id, { queue, pid, startedAt: Date.now(), runAt });
 }
 
 /**
@@ -95,59 +95,66 @@ function onIpcDequeue(pid, msg) {
  * @param {string} jobId
  */
 function onIpcJobDone(jobId) {
-	activeJobs.delete(jobId);
+    activeJobs.delete(jobId);
 }
 
 function onStart(event) {
-	const { id, queue, runAt: runAtStr, startedAt: startedAtStr } = event;
-	const runAt = Number(runAtStr);
-	const startedAt = Number(startedAtStr);
+    const { id, queue, runAt: runAtStr, startedAt: startedAtStr } = event;
+    const runAt = Number(runAtStr);
+    const startedAt = Number(startedAtStr);
 
-	// No re-processing of succeeded jobs (except periodic which re-queues itself)
-	if (succeededJobs.has(id) && !id.startsWith('fuzz-periodic-')) {
-		violation('NoReprocess', `Job ${id} started after already succeeding`, {
-			queue,
-			startedAt,
-		});
-	}
+    // No re-processing of succeeded jobs (except periodic which re-queues itself)
+    if (succeededJobs.has(id) && !id.startsWith('fuzz-periodic-')) {
+        violation('NoReprocess', `Job ${id} started after already succeeding`, {
+            queue,
+            startedAt,
+        });
+    }
 
-	// Scheduling: not before runAt
-	if (runAt > 0 && startedAt < runAt - CLOCK_TOLERANCE_MS) {
-		violation('Scheduling', `Job ${id} started ${runAt - startedAt}ms too early`, {
-			queue,
-			runAt,
-			startedAt,
-			delta: runAt - startedAt,
-		});
-	}
+    // Scheduling: not before runAt
+    if (runAt > 0 && startedAt < runAt - CLOCK_TOLERANCE_MS) {
+        violation('Scheduling', `Job ${id} started ${runAt - startedAt}ms too early`, {
+            queue,
+            runAt,
+            startedAt,
+            delta: runAt - startedAt,
+        });
+    }
 
-	// Priority ordering: no eligible lower-runAt job in same queue waiting
-	const waiting = waitingByQueue.get(queue) ?? [];
-	for (const w of waiting) {
-		if (w.id === id) continue;
-		if (w.runAt <= startedAt - CLOCK_TOLERANCE_MS) {
-			if (runAt > w.runAt + PRIORITY_LAG_MS) {
-				violation('Ordering', `Job ${id} (runAt=${runAt}) started before ${w.id} (runAt=${w.runAt}) in ${queue}`, {
-					startedId: id,
-					startedRunAt: runAt,
-					waitingId: w.id,
-					waitingRunAt: w.runAt,
-				});
-				break;
-			}
-		}
-	}
+    // Priority ordering: no eligible lower-runAt job in same queue waiting
+    const waiting = waitingByQueue.get(queue) ?? [];
+    for (const w of waiting) {
+        if (w.id === id) continue;
+        if (w.runAt <= startedAt - CLOCK_TOLERANCE_MS) {
+            if (runAt > w.runAt + PRIORITY_LAG_MS) {
+                violation(
+                    'Ordering',
+                    `Job ${id} (runAt=${runAt}) started before ${w.id} (runAt=${w.runAt}) in ${queue}`,
+                    {
+                        startedId: id,
+                        startedRunAt: runAt,
+                        waitingId: w.id,
+                        waitingRunAt: w.runAt,
+                    }
+                );
+                break;
+            }
+        }
+    }
 
-	lastStartPerQueue.set(queue, startedAt);
+    lastStartPerQueue.set(queue, startedAt);
 
-	// Remove from waiting list
-	if (waitingByQueue.has(queue)) {
-		waitingByQueue.set(queue, waitingByQueue.get(queue).filter((w) => w.id !== id));
-	}
+    // Remove from waiting list
+    if (waitingByQueue.has(queue)) {
+        waitingByQueue.set(
+            queue,
+            waitingByQueue.get(queue).filter((w) => w.id !== id)
+        );
+    }
 }
 
 function onFinish(event) {
-	succeededJobs.add(event.id);
+    succeededJobs.add(event.id);
 }
 
 /**
@@ -157,84 +164,88 @@ function onFinish(event) {
  * @param {number} pid
  */
 function onProcessExit(pid) {
-	for (const [id, entry] of activeJobs) {
-		if (entry.pid === pid) {
-			activeJobs.delete(id);
-		}
-	}
+    for (const [id, entry] of activeJobs) {
+        if (entry.pid === pid) {
+            activeJobs.delete(id);
+        }
+    }
 }
 
 /**
  * Called periodically to check queue progress and priority starvation.
  */
 function checkProgress() {
-	const now = Date.now();
-	for (const [queue, lastStart] of lastStartPerQueue) {
-		const idle = now - lastStart;
-		if (idle > STALL_THRESHOLD_MS) {
-			violation('Progress', `Queue ${queue} has not processed a job in ${idle}ms`, {
-				queue,
-				lastStartAt: lastStart,
-				idleMs: idle,
-			});
-		}
-	}
+    const now = Date.now();
+    for (const [queue, lastStart] of lastStartPerQueue) {
+        const idle = now - lastStart;
+        if (idle > STALL_THRESHOLD_MS) {
+            violation('Progress', `Queue ${queue} has not processed a job in ${idle}ms`, {
+                queue,
+                lastStartAt: lastStart,
+                idleMs: idle,
+            });
+        }
+    }
 
-	// Priority starvation: cascade-b should not start while periodic has old eligible jobs
-	const periodicWaiting = waitingByQueue.get('{fuzz}:periodic') ?? [];
-	const eligiblePeriodic = periodicWaiting.filter((w) => w.runAt <= now - PRIORITY_LAG_MS);
-	if (eligiblePeriodic.length > 0) {
-		const lastBStart = lastStartPerQueue.get('{fuzz}:cascade-b') ?? 0;
-		const bStartedAfterPeriodic = eligiblePeriodic.some(
-			(w) => lastBStart > w.dispatchedAt + PRIORITY_LAG_MS,
-		);
-		if (bStartedAfterPeriodic) {
-			violation('PriorityStarvation', 'cascade-b processed while periodic had eligible waiting jobs', {
-				eligiblePeriodicCount: eligiblePeriodic.length,
-			});
-		}
-	}
+    // Priority starvation: cascade-b should not start while periodic has old eligible jobs
+    const periodicWaiting = waitingByQueue.get('{fuzz}:periodic') ?? [];
+    const eligiblePeriodic = periodicWaiting.filter((w) => w.runAt <= now - PRIORITY_LAG_MS);
+    if (eligiblePeriodic.length > 0) {
+        const lastBStart = lastStartPerQueue.get('{fuzz}:cascade-b') ?? 0;
+        const bStartedAfterPeriodic = eligiblePeriodic.some(
+            (w) => lastBStart > w.dispatchedAt + PRIORITY_LAG_MS
+        );
+        if (bStartedAfterPeriodic) {
+            violation(
+                'PriorityStarvation',
+                'cascade-b processed while periodic had eligible waiting jobs',
+                {
+                    eligiblePeriodicCount: eligiblePeriodic.length,
+                }
+            );
+        }
+    }
 }
 
 // ── Event dispatch ─────────────────────────────────────────────────────────────
 
 function handleEvent(event) {
-	eventCount++;
-	const { type } = event;
-	log('info', 'event', event);
+    eventCount++;
+    const { type } = event;
+    log('info', 'event', event);
 
-	if (type === 'start') {
-		const { id, queue, runAt } = event;
-		// Register in waiting list for ordering checks (before onStart removes it)
-		const runAtNum = Number(runAt);
-		const q = waitingByQueue.get(queue) ?? [];
-		if (!q.find((w) => w.id === id)) {
-			q.push({ id, runAt: runAtNum, dispatchedAt: Date.now() });
-			waitingByQueue.set(queue, q);
-		}
-		onStart(event);
-	} else if (type === 'finish') {
-		onFinish(event);
-	}
+    if (type === 'start') {
+        const { id, queue, runAt } = event;
+        // Register in waiting list for ordering checks (before onStart removes it)
+        const runAtNum = Number(runAt);
+        const q = waitingByQueue.get(queue) ?? [];
+        if (!q.find((w) => w.id === id)) {
+            q.push({ id, runAt: runAtNum, dispatchedAt: Date.now() });
+            waitingByQueue.set(queue, q);
+        }
+        onStart(event);
+    } else if (type === 'finish') {
+        onFinish(event);
+    }
 }
 
 // ── Summary ────────────────────────────────────────────────────────────────────
 
 function printSummary() {
-	const summary = {
-		events: eventCount,
-		violations: violationCount,
-		activeJobs: activeJobs.size,
-		succeededJobs: succeededJobs.size,
-		lastStartPerQueue: Object.fromEntries(lastStartPerQueue),
-	};
-	log('info', 'Summary', summary);
-	console.log(`\n=== Fuzz Summary ===`);
-	console.log(`  Events processed : ${eventCount}`);
-	console.log(`  Violations found : ${violationCount}`);
-	console.log(`  Active jobs      : ${activeJobs.size}`);
-	console.log(`  Succeeded jobs   : ${succeededJobs.size}`);
-	console.log('===================\n');
+    const summary = {
+        events: eventCount,
+        violations: violationCount,
+        activeJobs: activeJobs.size,
+        succeededJobs: succeededJobs.size,
+        lastStartPerQueue: Object.fromEntries(lastStartPerQueue),
+    };
+    log('info', 'Summary', summary);
+    console.log(`\n=== Fuzz Summary ===`);
+    console.log(`  Events processed : ${eventCount}`);
+    console.log(`  Violations found : ${violationCount}`);
+    console.log(`  Active jobs      : ${activeJobs.size}`);
+    console.log(`  Succeeded jobs   : ${succeededJobs.size}`);
+    console.log('===================\n');
 }
 
 // ── Child process management ───────────────────────────────────────────────────
@@ -243,37 +254,37 @@ function printSummary() {
 const processes = new Set();
 
 function spawnProcess() {
-	const child = fork(join(__dirname, 'process.js'));
-	processes.add(child);
+    const child = fork(join(__dirname, 'process.js'));
+    processes.add(child);
 
-	child.on('message', (msg) => {
-		if (msg.type === 'dequeue') {
-			onIpcDequeue(child.pid, msg);
-		} else if (msg.type === 'finish' || msg.type === 'retry' || msg.type === 'fail') {
-			onIpcJobDone(msg.jobId);
-		}
-	});
+    child.on('message', (msg) => {
+        if (msg.type === 'dequeue') {
+            onIpcDequeue(child.pid, msg);
+        } else if (msg.type === 'finish' || msg.type === 'retry' || msg.type === 'fail') {
+            onIpcJobDone(msg.jobId);
+        }
+    });
 
-	child.on('exit', (code, signal) => {
-		processes.delete(child);
-		log('info', 'Child process exited', { pid: child.pid, code, signal });
-		onProcessExit(child.pid);
-		setTimeout(spawnProcess, PROCESS_RESTART_DELAY_MS);
-	});
+    child.on('exit', (code, signal) => {
+        processes.delete(child);
+        log('info', 'Child process exited', { pid: child.pid, code, signal });
+        onProcessExit(child.pid);
+        setTimeout(spawnProcess, PROCESS_RESTART_DELAY_MS);
+    });
 
-	child.on('error', (err) => {
-		log('info', 'Child process error', { pid: child.pid, error: err.message });
-	});
+    child.on('error', (err) => {
+        log('info', 'Child process error', { pid: child.pid, error: err.message });
+    });
 
-	return child;
+    return child;
 }
 
 function killRandomProcess() {
-	const list = [...processes];
-	if (list.length === 0) return;
-	const target = list[Math.floor(Math.random() * list.length)];
-	log('info', 'Killing random child process', { pid: target.pid });
-	target.kill('SIGKILL');
+    const list = [...processes];
+    if (list.length === 0) return;
+    const target = list[Math.floor(Math.random() * list.length)];
+    log('info', 'Killing random child process', { pid: target.pid });
+    target.kill('SIGKILL');
 }
 
 // ── Redis setup ────────────────────────────────────────────────────────────────
@@ -293,15 +304,15 @@ const dispatchClient = await new Promise((resolve) => new Client(dispatchRedis, 
 const periodicQueue = dispatchClient.queue('{fuzz}:periodic', true);
 
 for (let i = 0; i < NUM_PERIODIC_JOBS; i++) {
-	const id = `fuzz-periodic-${i}`;
-	await periodicQueue.dispatch({ periodic: true, index: i }, { id });
-	log('info', `Dispatched seed job ${id}`);
+    const id = `fuzz-periodic-${i}`;
+    await periodicQueue.dispatch({ periodic: true, index: i }, { id });
+    log('info', `Dispatched seed job ${id}`);
 }
 
 // ── Spawn child processes ──────────────────────────────────────────────────────
 
 for (let i = 0; i < NUM_PROCESSES; i++) {
-	spawnProcess();
+    spawnProcess();
 }
 
 // Periodically kill a random process to simulate crashes
@@ -314,24 +325,24 @@ const progressTimer = setInterval(checkProgress, 10_000);
 const summaryTimer = setInterval(printSummary, SUMMARY_INTERVAL_MS);
 
 log('info', 'Orchestrator started', {
-	numProcesses: NUM_PROCESSES,
-	numPeriodicJobs: NUM_PERIODIC_JOBS,
-	logFile: LOG_FILE,
+    numProcesses: NUM_PROCESSES,
+    numPeriodicJobs: NUM_PERIODIC_JOBS,
+    logFile: LOG_FILE,
 });
 
 // ── SIGINT handler ─────────────────────────────────────────────────────────────
 
 process.on('SIGINT', () => {
-	clearInterval(crashTimer);
-	clearInterval(progressTimer);
-	clearInterval(summaryTimer);
+    clearInterval(crashTimer);
+    clearInterval(progressTimer);
+    clearInterval(summaryTimer);
 
-	for (const child of processes) {
-		child.kill('SIGKILL');
-	}
+    for (const child of processes) {
+        child.kill('SIGKILL');
+    }
 
-	printSummary();
-	process.exit(violationCount > 0 ? 1 : 0);
+    printSummary();
+    process.exit(violationCount > 0 ? 1 : 0);
 });
 
 // ── Event loop ─────────────────────────────────────────────────────────────────
@@ -339,5 +350,5 @@ process.on('SIGINT', () => {
 // Read from the beginning. We cleared the stream above, so '0' reads all
 // events from the fresh start without missing anything.
 for await (const event of readEvents(redis, '0')) {
-	handleEvent(event);
+    handleEvent(event);
 }

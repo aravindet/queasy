@@ -21,7 +21,7 @@ Tests require a running Redis instance. Use `docker:up` first if needed.
 
 Queasy is a Redis-backed job queue with **at-least-once** delivery semantics. The core logic lives in two layers:
 
-- **JS layer** (`src/queue.js`): The `queue()` factory returns `{ dispatch, cancel, listen }`. On first use, it uploads the Lua script to Redis via `FUNCTION LOAD REPLACE`. A `WeakSet` (`initializedClients`) tracks which Redis clients have already had the functions loaded. `listen()` is currently a TODO stub.
+- **JS layer** (`src/client.js`): The `Client` class accepts a `RedisOptions` object and constructs its own node-redis connection via `createClient` (plain object) or `createCluster` (object with `rootNodes`). On construction it connects, then uploads the Lua script to Redis via `FUNCTION LOAD REPLACE`. The connection is torn down in `close()` via `destroy()`.
 - **Lua layer** (`src/queasy.lua`): All queue state mutations are atomic Redis functions registered under the `queasy` library. No queue logic should be duplicated in JS — the Lua functions are the single source of truth for state transitions.
 
 ### Redis data structures

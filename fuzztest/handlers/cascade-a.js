@@ -25,65 +25,70 @@ const crashChannel = new BroadcastChannel('fuzz-crash');
  * @param {any} data
  * @param {import('../../src/types.js').Job} job
  */
-export async function handle(data, job) {
-	const startedAt = Date.now();
-	await emitEvent(eventRedis, {
-		type: 'start',
-		queue: '{fuzz}:cascade-a',
-		id: job.id,
-		pid: String(process.pid),
-		runAt: String(job.runAt),
-		startedAt: String(startedAt),
-	});
+export async function handle(_data, job) {
+    const startedAt = Date.now();
+    await emitEvent(eventRedis, {
+        type: 'start',
+        queue: '{fuzz}:cascade-a',
+        id: job.id,
+        pid: String(process.pid),
+        runAt: String(job.runAt),
+        startedAt: String(startedAt),
+    });
 
-	const chaos = pickChaos();
-	await emitEvent(eventRedis, {
-		type: 'chaos',
-		queue: '{fuzz}:cascade-a',
-		id: job.id,
-		chaos,
-	});
+    const chaos = pickChaos();
+    await emitEvent(eventRedis, {
+        type: 'chaos',
+        queue: '{fuzz}:cascade-a',
+        id: job.id,
+        chaos,
+    });
 
-	if (chaos === 'crash') {
-		crashChannel.postMessage({ type: 'crash' });
-		await new Promise(() => {});
-	}
+    if (chaos === 'crash') {
+        crashChannel.postMessage({ type: 'crash' });
+        await new Promise(() => {});
+    }
 
-	if (chaos === 'stall') {
-		await new Promise(() => {});
-	}
+    if (chaos === 'stall') {
+        await new Promise(() => {});
+    }
 
-	if (chaos === 'spin') {
-		const end = Date.now() + 10_000;
-		while (Date.now() < end) { /* busy wait */ }
-	}
+    if (chaos === 'spin') {
+        const end = Date.now() + 10_000;
+        while (Date.now() < end) {
+            /* busy wait */
+        }
+    }
 
-	if (chaos === 'permanent') {
-		throw new PermanentError('cascade-a: permanent chaos');
-	}
+    if (chaos === 'permanent') {
+        throw new PermanentError('cascade-a: permanent chaos');
+    }
 
-	if (chaos === 'retriable') {
-		throw new Error('cascade-a: retriable chaos');
-	}
+    if (chaos === 'retriable') {
+        throw new Error('cascade-a: retriable chaos');
+    }
 
-	// Normal completion: dispatch 1-2 cascade-b jobs
-	const count = Math.random() < 0.5 ? 1 : 2;
-	const runAtOffset = Math.random() * 2000;
-	const dispatchPromises = [];
-	for (let i = 0; i < count; i++) {
-		dispatchPromises.push(
-			cascadeBQueue.dispatch({ from: job.id, index: i }, {
-				runAt: Date.now() + runAtOffset,
-			}),
-		);
-	}
-	const ids = await Promise.all(dispatchPromises);
+    // Normal completion: dispatch 1-2 cascade-b jobs
+    const count = Math.random() < 0.5 ? 1 : 2;
+    const runAtOffset = Math.random() * 2000;
+    const dispatchPromises = [];
+    for (let i = 0; i < count; i++) {
+        dispatchPromises.push(
+            cascadeBQueue.dispatch(
+                { from: job.id, index: i },
+                {
+                    runAt: Date.now() + runAtOffset,
+                }
+            )
+        );
+    }
+    const ids = await Promise.all(dispatchPromises);
 
-	await emitEvent(eventRedis, {
-		type: 'finish',
-		queue: '{fuzz}:cascade-a',
-		id: job.id,
-		finishedAt: String(Date.now()),
-		dispatched: ids.join(','),
-	});
+    await emitEvent(eventRedis, {
+        type: 'finish',
+        queue: '{fuzz}:cascade-a',
+        id: job.id,
+        finishedAt: String(Date.now()),
+        dispatched: ids.join(','),
+    });
 }

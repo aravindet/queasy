@@ -11,11 +11,11 @@ export const STREAM_KEY = 'fuzz:events';
  * @param {Record<string, string>} fields
  */
 export async function emitEvent(redis, fields) {
-	try {
-		await redis.xAdd(STREAM_KEY, '*', fields);
-	} catch {
-		// Never let event emission crash a handler
-	}
+    try {
+        await redis.xAdd(STREAM_KEY, '*', fields);
+    } catch {
+        // Never let event emission crash a handler
+    }
 }
 
 /**
@@ -26,18 +26,15 @@ export async function emitEvent(redis, fields) {
  * @yields {Record<string, string>}
  */
 export async function* readEvents(redis, lastId = '0') {
-	let id = lastId;
-	while (true) {
-		const results = await redis.xRead(
-			{ key: STREAM_KEY, id },
-			{ BLOCK: 1000, COUNT: 100 },
-		);
-		if (!results) continue;
-		for (const { messages } of results) {
-			for (const { id: msgId, message } of messages) {
-				id = msgId;
-				yield message;
-			}
-		}
-	}
+    let id = lastId;
+    while (true) {
+        const results = await redis.xRead({ key: STREAM_KEY, id }, { BLOCK: 1000, COUNT: 100 });
+        if (!results) continue;
+        for (const { messages } of results) {
+            for (const { id: msgId, message } of messages) {
+                id = msgId;
+                yield message;
+            }
+        }
+    }
 }

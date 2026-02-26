@@ -1,8 +1,10 @@
 import EventEmitter from 'node:events';
 import { readFileSync } from 'node:fs';
+import os from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getEnvironmentData } from 'node:worker_threads';
+import { createClient, createCluster } from 'redis';
 import { HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT, LUA_FUNCTIONS_VERSION } from './constants.js';
 import { Manager } from './manager.js';
 import { Pool } from './pool.js';
@@ -18,7 +20,7 @@ const luaScript = readFileSync(join(__dirname, 'queasy.lua'), 'utf8').replace(
 /**
  * Check the installed version and load our Lua functions if needed.
  * Returns true if this client should be disconnected (newer major on server).
- * @param {RedisClient} redis
+ * @param {{ fCall: Function, sendCommand: Function }} redis
  * @returns {Promise<boolean>} Whether to disconnect.
  */
 async function installLuaFunctions(redis) {
@@ -38,8 +40,18 @@ async function installLuaFunctions(redis) {
     return installedVersion[0] > availableVersion[0];
 }
 
-/** @typedef {import('redis').RedisClientType} RedisClient */
+/** @typedef {import('./types').RedisOptions} RedisOptions */
 /** @typedef {import('./types').Job} Job */
+
+/**
+ * @param {RedisOptions} options
+ */
+function buildRedisConnection(options) {
+    if ('rootNodes' in options) {
+        return createCluster(options);
+    }
+    return createClient(options);
+}
 
 /** @typedef {{ queue: Queue, bumpTimer?: NodeJS.Timeout }} QueueEntry */
 
@@ -70,13 +82,13 @@ export function parseJob(jobArray) {
 
 export class Client extends EventEmitter {
     /**
-     * @param {RedisClient} redis - Redis client
-     * @param {number?} workerCount - Allow this client to dequeue jobs.
+     * @param {RedisOptions} options - Redis connection options
+     * @param {number} [workerCount] - Allow this client to dequeue jobs.
      * @param {((client: Client) => any)} [callback] - Callback when client is ready
      */
-    constructor(redis, workerCount, callback) {
+    constructor(options = {}, workerCount = os.cpus().length, callback) {
         super();
-        this.redis = redis;
+        this.redis = buildRedisConnection(options);
         this.clientId = generateId();
 
         /** @type {Record<string, QueueEntry>} */
@@ -90,14 +102,21 @@ export class Client extends EventEmitter {
         // Not awaited — the Lua script is read synchronously at module load,
         // so Redis' single-threaded ordering ensures the FUNCTION LOAD completes
         // before any subsequent fCalls from user code.
-        installLuaFunctions(this.redis).then((disconnect) => {
-            this.disconnected = disconnect;
-            if (disconnect) this.emit('disconnected', 'Redis has incompatible queasy version.');
-            else {
-                this.emit('connected');
-                if (callback) callback(this);
-            }
-        });
+        this.redis
+            .connect()
+            .then(() => installLuaFunctions(this.redis))
+            .then((disconnect) => {
+                this.disconnected = disconnect;
+                if (disconnect) this.emit('disconnected', 'Redis has incompatible queasy version.');
+                else {
+                    this.emit('connected');
+                    if (callback) callback(this);
+                }
+            })
+            .catch((err) => {
+                this.disconnected = true;
+                this.emit('disconnected', err.message);
+            });
     }
 
     /**
@@ -158,6 +177,7 @@ export class Client extends EventEmitter {
         this.queues = {};
         this.pool = undefined;
         this.disconnected = true;
+        await this.redis.quit().catch(() => {});
     }
 
     /**
@@ -214,7 +234,9 @@ export class Client extends EventEmitter {
         // Heartbeats should start with the first dequeue.
         this.scheduleBump(key);
 
-        const jobs = /** @type Job[] */ (result.map((jobArray) => parseJob(jobArray)).filter(Boolean));
+        const jobs = /** @type Job[] */ (
+            result.map((jobArray) => parseJob(jobArray)).filter(Boolean)
+        );
         for (const job of jobs) this.emit('dequeue', key, job);
         return jobs;
     }

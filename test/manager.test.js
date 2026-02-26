@@ -163,7 +163,9 @@ describe('Manager scheduling', () => {
         if (keys.length > 0) await redis.del(keys);
 
         // Do NOT mock manager.addQueue — let the manager drive dequeuing
-        client = new Client(redis, 1);
+        await new Promise((res) => {
+            client = new Client({}, 1, res);
+        });
     });
 
     afterEach(async () => {

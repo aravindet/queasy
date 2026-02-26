@@ -14,7 +14,7 @@ describe.skip('Client heartbeat', () => {
     beforeEach(async () => {
         redis = createClient();
         await redis.connect();
-        client = new Client(redis, 1);
+        client = new Client({}, 1);
         client.scheduleBump = mock.fn();
         if (client.manager) client.manager.addQueue = mock.fn();
     });

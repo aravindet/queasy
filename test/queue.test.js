@@ -19,10 +19,11 @@ describe('Queue E2E', () => {
             await redis.del(keys);
         }
 
-        client = new Client(redis, 1);
-
-        // Mock this so that no actual work is dequeued by the manager.
-        if (client.manager) client.manager.addQueue = mock.fn();
+        await new Promise((res) => {
+            client = new Client({}, 1, res);
+            // Mock this so that no actual work is dequeued by the manager.
+            if (client.manager) client.manager.addQueue = mock.fn();
+        });
     });
 
     afterEach(async () => {

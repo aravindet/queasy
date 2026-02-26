@@ -13,7 +13,7 @@ A Redis-backed job queue for Node.js, featuring (in comparison with design inspi
 
 ### Terminology
 
-A _client_ is an instance of Queasy that connects to a Redis database. A _job_ is the basic unit of work that is _dispatched_ into a _queue_.
+A _client_ is an instance of Queasy. It manages its own Redis connection. A _job_ is the basic unit of work that is _dispatched_ into a _queue_.
 
 A _handler_ is JavaScript code that performs work. There are two kinds of handlers: _task handlers_, which process jobs, and _fail handlers_, which are invoked when a job fails permanently. Handlers run on _workers_, which are Node.js worker threads. By default, a Queasy client automatically creates one worker per CPU.
 
@@ -55,9 +55,14 @@ The response of the heartbeat Lua function indicates whether the client had been
 
 ## API
 
-### `client(redisConnection, workerCount)`
-Returns a Queasy client.
-- `redisConnection`: a node-redis connection object.
+### `new Client(options, workerCount)`
+Returns a Queasy client. Queasy creates and manages its own Redis connection internally.
+- `options`: connection options. Two forms are accepted:
+  - **Single node** (plain object): passed to node-redis `createClient`. Accepts `url`, `socket`, `username`, `password`, and `database`. Defaults to `{}` (connects to `localhost:6379`).
+  - **Cluster** (object with `rootNodes`): passed to node-redis `createCluster`. Accepts:
+    - `rootNodes`: array of per-node connection options (same fields as single-node form); at least three nodes are recommended.
+    - `defaults`: options shared across all nodes (e.g. auth and TLS).
+    - `nodeAddressMap`: address translation map for NAT environments.
 - `workerCount`: number; Size of the worker pool. If 0, or if called in a queasy worker thread, no pool is created. Defaults to the number of CPUs.
 
 The client object returned is an EventEmitter, which emits a 'disconnect' event when it fails permanently for any reason, such as library version mismatch between different workers connected to the same Redis insance, or a lost locks situation. When this happens, in general the application should exit the worker process and allow the supervisor to restart it.

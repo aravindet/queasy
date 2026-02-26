@@ -111,8 +111,10 @@ describe('Pool stall and timeout', () => {
         const keys = await redis.keys(`{${QUEUE_NAME}}*`);
         if (keys.length > 0) await redis.del(keys);
 
-        client = new Client(redis, 1);
-        if (client.manager) client.manager.addQueue = mock.fn();
+        await new Promise((res) => {
+            client = new Client({}, 1, res);
+            if (client.manager) client.manager.addQueue = mock.fn();
+        });
     });
 
     afterEach(async () => {
