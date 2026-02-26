@@ -29,7 +29,7 @@ describe('Client heartbeat', () => {
         const q = client.queue(QUEUE_NAME);
         await q.dispatch({ task: 'test' });
 
-        const handlerPath = new URL('./fixtures/success-handler.ts', import.meta.url).pathname;
+        const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
         await q.listen(handlerPath);
 
         // Dequeue to start heartbeats

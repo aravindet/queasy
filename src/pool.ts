@@ -34,7 +34,9 @@ export class Pool {
     }
 
     createWorker(): void {
-        const worker = new Worker(new URL('./worker.ts', import.meta.url));
+        // Copy file extension from current file so it works in src and dist.
+        const workerFilename = `./worker${import.meta.url.slice(-3)}`;
+        const worker = new Worker(new URL(workerFilename, import.meta.url));
         const entry: WorkerEntry = {
             worker,
             capacity: WORKER_CAPACITY,
