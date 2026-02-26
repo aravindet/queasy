@@ -4,13 +4,13 @@ import { dirname, join } from 'node:path';
 import { after, afterEach, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { createClient } from 'redis';
+import type { RedisClientType } from 'redis';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 describe('Redis Lua functions', () => {
-    /** @type {import('redis').RedisClientType} */
-    let redis;
+    let redis: RedisClientType;
     const QUEUE_NAME = '{test-queue}';
 
     before(async () => {
@@ -281,12 +281,10 @@ describe('Redis Lua functions', () => {
 
             // Dequeue
             const expiryTime = now + 10000;
-            const result = /** @type {string[][]} */ (
-                await redis.fCall('queasy_dequeue', {
-                    keys: [QUEUE_NAME],
-                    arguments: [clientId, now.toString(), expiryTime.toString(), '10'],
-                })
-            );
+            const result = await redis.fCall('queasy_dequeue', {
+                keys: [QUEUE_NAME],
+                arguments: [clientId, now.toString(), expiryTime.toString(), '10'],
+            }) as string[][];
 
             assert.equal(result.length, 2);
             assert.deepEqual(result[0], ['id', jobId1]);
@@ -318,12 +316,10 @@ describe('Redis Lua functions', () => {
             await redis.hSet(`${QUEUE_NAME}:waiting_job:${jobId}`, 'id', jobId);
 
             // Try to dequeue
-            const result = /** @type {string[][]} */ (
-                await redis.fCall('queasy_dequeue', {
-                    keys: [QUEUE_NAME],
-                    arguments: [clientId, now.toString(), String(now + 10000), '10'],
-                })
-            );
+            const result = await redis.fCall('queasy_dequeue', {
+                keys: [QUEUE_NAME],
+                arguments: [clientId, now.toString(), String(now + 10000), '10'],
+            }) as string[][];
 
             assert.equal(result.length, 0);
         });
@@ -338,12 +334,10 @@ describe('Redis Lua functions', () => {
             await redis.hSet(`${QUEUE_NAME}:waiting_job:${jobId}`, 'id', jobId);
 
             // Try to dequeue
-            const result = /** @type {string[][]} */ (
-                await redis.fCall('queasy_dequeue', {
-                    keys: [QUEUE_NAME],
-                    arguments: [clientId, now.toString(), String(now + 10000), '10'],
-                })
-            );
+            const result = await redis.fCall('queasy_dequeue', {
+                keys: [QUEUE_NAME],
+                arguments: [clientId, now.toString(), String(now + 10000), '10'],
+            }) as string[][];
 
             assert.equal(result.length, 0);
         });

@@ -1,11 +1,11 @@
 import assert from 'node:assert';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import { createClient } from 'redis';
-import { Client } from '../dist/index.js';
+import type { RedisClientType } from 'redis';
+import { Client } from '../src/index.ts';
 
 describe('Client disconnect guard', () => {
-    /** @type {import('../dist/client.js').Client} */
-    let client;
+    let client: Client;
 
     beforeEach(() => {
         return new Promise((res) => {
@@ -24,8 +24,7 @@ describe('Client disconnect guard', () => {
 });
 
 describe('Queue disconnect guards', () => {
-    /** @type {import('../dist/client.js').Client} */
-    let client;
+    let client: Client;
 
     beforeEach(() => {
         return new Promise((res) => {
@@ -57,7 +56,7 @@ describe('Queue disconnect guards', () => {
     });
 
     it('should throw from listen() on non-processing client', async () => {
-        const nonProcessingClient = await new Promise((res) => new Client({}, 0, res));
+        const nonProcessingClient = await new Promise<Client>((res) => new Client({}, 0, res));
         const q = nonProcessingClient.queue('guard-test');
         await assert.rejects(() => q.listen('/some/handler.js'), /non-processing/);
         await nonProcessingClient.close();
@@ -65,10 +64,8 @@ describe('Queue disconnect guards', () => {
 });
 
 describe('Client bump lost lock', () => {
-    /** @type {import('redis').RedisClientType} */
-    let redis;
-    /** @type {import('../dist/client.js').Client} */
-    let client;
+    let redis: RedisClientType;
+    let client: Client;
 
     const QUEUE_NAME = 'bump-lock-test';
 
@@ -94,7 +91,7 @@ describe('Client bump lost lock', () => {
     it('should close and emit disconnected when bump returns 0', async () => {
         const q = client.queue(QUEUE_NAME);
         await q.dispatch({ task: 'test' });
-        const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
+        const handlerPath = new URL('./fixtures/success-handler.ts', import.meta.url).pathname;
         await q.listen(handlerPath);
 
         // Dequeue to register the client in the expiry set and start heartbeats
@@ -117,7 +114,7 @@ describe('Client bump lost lock', () => {
         const q = client.queue(QUEUE_NAME);
         // Set up the queue entry so scheduleBump doesn't error
         await q.dispatch({ task: 'test' });
-        const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
+        const handlerPath = new URL('./fixtures/success-handler.ts', import.meta.url).pathname;
         await q.listen(handlerPath);
         await (await q.dequeue(1)).promise;
 

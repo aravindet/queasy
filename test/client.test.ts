@@ -1,15 +1,14 @@
 import assert from 'node:assert';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import { createClient } from 'redis';
-import { Client } from '../dist/index.js';
+import type { RedisClientType } from 'redis';
+import { Client } from '../src/index.ts';
 
 const QUEUE_NAME = 'client-test';
 
 describe.skip('Client heartbeat', () => {
-    /** @type {import('redis').RedisClientType} */
-    let redis;
-    /** @type {import('../dist/client.js').Client} */
-    let client;
+    let redis: RedisClientType;
+    let client: Client;
 
     beforeEach(async () => {
         redis = createClient();
@@ -30,7 +29,7 @@ describe.skip('Client heartbeat', () => {
         const q = client.queue(QUEUE_NAME);
         await q.dispatch({ task: 'test' });
 
-        const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
+        const handlerPath = new URL('./fixtures/success-handler.ts', import.meta.url).pathname;
         await q.listen(handlerPath);
 
         // Dequeue to start heartbeats

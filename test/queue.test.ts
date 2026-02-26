@@ -1,15 +1,14 @@
 import assert from 'node:assert';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import { createClient } from 'redis';
-import { Client } from '../dist/index.js';
+import type { RedisClientType } from 'redis';
+import { Client } from '../src/index.ts';
 
 const QUEUE_NAME = 'test';
 
 describe('Queue E2E', () => {
-    /** @type {import('redis').RedisClientType} */
-    let redis;
-    /** @type {import('../dist/client.js').Client}*/
-    let client;
+    let redis: RedisClientType;
+    let client: Client;
 
     beforeEach(async () => {
         redis = createClient();
@@ -129,7 +128,7 @@ describe('Queue E2E', () => {
             const q = client.queue(QUEUE_NAME);
             const jobId = await q.dispatch({ greeting: 'hello' });
 
-            const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
+            const handlerPath = new URL('./fixtures/success-handler.ts', import.meta.url).pathname;
             await q.listen(handlerPath);
             await (await q.dequeue(1)).promise;
 
@@ -149,7 +148,7 @@ describe('Queue E2E', () => {
                 q.dispatch({ id: 3 }),
             ]);
 
-            const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
+            const handlerPath = new URL('./fixtures/success-handler.ts', import.meta.url).pathname;
             await q.listen(handlerPath);
             await (await q.dequeue(5)).promise;
 
@@ -166,7 +165,7 @@ describe('Queue E2E', () => {
             const futureTime = Date.now() + 10000;
             const jobId = await q.dispatch({ task: 'future' }, { runAt: futureTime });
 
-            const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
+            const handlerPath = new URL('./fixtures/success-handler.ts', import.meta.url).pathname;
             await q.listen(handlerPath);
             await (await q.dequeue(1)).promise;
 
@@ -185,7 +184,7 @@ describe('Queue E2E', () => {
             const cancelled = await q.cancel(jobId1);
             assert.ok(cancelled);
 
-            const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
+            const handlerPath = new URL('./fixtures/success-handler.ts', import.meta.url).pathname;
             await q.listen(handlerPath);
             await (await q.dequeue(1)).promise;
 
@@ -213,7 +212,7 @@ describe('Queue E2E', () => {
             const jobId1 = await queue1.dispatch({ queue: 1 });
             const jobId2 = await queue2.dispatch({ queue: 2 });
 
-            const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
+            const handlerPath = new URL('./fixtures/success-handler.ts', import.meta.url).pathname;
             await queue1.listen(handlerPath);
             await queue2.listen(handlerPath);
             // First wait for these jobs to be dequeued and sent to workers
@@ -246,9 +245,9 @@ describe('Queue E2E', () => {
             const q = client.queue('fail-opt');
             await q.dispatch({ task: 'will-fail' });
 
-            const mainHandler = new URL('./fixtures/with-failure-handler.js', import.meta.url)
+            const mainHandler = new URL('./fixtures/with-failure-handler.ts', import.meta.url)
                 .pathname;
-            const failHandler = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
+            const failHandler = new URL('./fixtures/success-handler.ts', import.meta.url).pathname;
 
             // listen with failHandler option — this covers queue.js lines 60-63
             await q.listen(mainHandler, { maxRetries: 0, failHandler });
@@ -271,7 +270,7 @@ describe('Queue E2E', () => {
             const q = client.queue(QUEUE_NAME);
             const jobId = await q.dispatch({ task: 'will-fail' });
 
-            const handlerPath = new URL('./fixtures/always-fail-handler.js', import.meta.url)
+            const handlerPath = new URL('./fixtures/always-fail-handler.ts', import.meta.url)
                 .pathname;
             await q.listen(handlerPath, { maxRetries: 2, minBackoff: 1000, maxBackoff: 10000 });
 
@@ -296,7 +295,7 @@ describe('Queue E2E', () => {
             // Manually set stall_count to exceed maxStalls (default 3)
             await redis.hSet(`{stall-test}:waiting_job:${jobId}`, 'stall_count', '5');
 
-            const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
+            const handlerPath = new URL('./fixtures/success-handler.ts', import.meta.url).pathname;
             await q.listen(handlerPath, { maxStalls: 3 });
             q.failKey = '{stall-test}-fail';
 
@@ -333,7 +332,7 @@ describe('Queue E2E', () => {
 
             await redis.hSet(`{stall-nofail}:waiting_job:${jobId}`, 'stall_count', '5');
 
-            const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
+            const handlerPath = new URL('./fixtures/success-handler.ts', import.meta.url).pathname;
             await q.listen(handlerPath, { maxStalls: 3 });
             // No failKey set — job should just be finished
 
@@ -360,7 +359,7 @@ describe('Queue E2E', () => {
             const q = client.queue('bad-handler');
             await q.dispatch({ task: 'test' });
 
-            const handlerPath = new URL('./fixtures/no-handle-handler.js', import.meta.url)
+            const handlerPath = new URL('./fixtures/no-handle-handler.ts', import.meta.url)
                 .pathname;
             await q.listen(handlerPath, { maxRetries: 0 });
             q.failKey = '{bad-handler}-fail';
@@ -398,7 +397,7 @@ describe('Queue E2E', () => {
             const q = client.queue('fail-test');
             const jobId = await q.dispatch({ task: 'will-fail' });
 
-            const handlerPath = new URL('./fixtures/with-failure-handler.js', import.meta.url)
+            const handlerPath = new URL('./fixtures/with-failure-handler.ts', import.meta.url)
                 .pathname;
 
             // Listen without failHandler so no fail queue listener races us

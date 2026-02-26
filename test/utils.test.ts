@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import { describe, it } from 'node:test';
-import { compareSemver, parseVersion } from '../dist/utils.js';
+import { compareSemver, parseVersion } from '../src/utils.ts';
 
 describe('parseVersion', () => {
     it('should parse a simple major.minor version', () => {

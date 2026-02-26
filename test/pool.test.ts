@@ -1,8 +1,10 @@
 import assert from 'node:assert';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import { createClient } from 'redis';
-import { Client } from '../dist/index.js';
-import { Pool } from '../dist/pool.js';
+import type { RedisClientType } from 'redis';
+import { Client } from '../src/index.ts';
+import { Pool } from '../src/pool.ts';
+import type { DoneMessage } from '../src/types.ts';
 
 describe('Pool unit tests', () => {
     /** Helper to create a fake job entry with a no-op timer */
@@ -11,12 +13,8 @@ describe('Pool unit tests', () => {
         return { resolve: () => {}, reject: () => {}, size, timer };
     }
 
-    /** @param {Pool} pool */
-    function getWorker(pool) {
-        const entry = /** @type {import('../dist/pool.js').WorkerEntry} */ (
-            pool.workers.values().next().value
-        );
-        return entry;
+    function getWorker(pool: Pool) {
+        return pool.workers.values().next().value;
     }
 
     it('should warn and return on message with unknown job ID', () => {
@@ -100,10 +98,8 @@ describe('Pool unit tests', () => {
 const QUEUE_NAME = 'pool-test';
 
 describe('Pool stall and timeout', () => {
-    /** @type {import('redis').RedisClientType} */
-    let redis;
-    /** @type {import('../dist/client.js').Client} */
-    let client;
+    let redis: RedisClientType;
+    let client: Client;
 
     beforeEach(async () => {
         redis = createClient();
@@ -128,7 +124,7 @@ describe('Pool stall and timeout', () => {
         const q = client.queue(QUEUE_NAME);
         const jobId = await q.dispatch({ delay: 500 });
 
-        const handlerPath = new URL('./fixtures/slow-handler.js', import.meta.url).pathname;
+        const handlerPath = new URL('./fixtures/slow-handler.ts', import.meta.url).pathname;
         // Very short timeout (50ms) so pool.handleTimeout fires before the 500ms handler completes
         await q.listen(handlerPath, { timeout: 50, maxRetries: 5 });
 
@@ -143,7 +139,7 @@ describe('Pool stall and timeout', () => {
         const q = client.queue(QUEUE_NAME);
         const jobId = await q.dispatch({ delay: 2000 });
 
-        const handlerPath = new URL('./fixtures/slow-handler.js', import.meta.url).pathname;
+        const handlerPath = new URL('./fixtures/slow-handler.ts', import.meta.url).pathname;
         await q.listen(handlerPath, { maxRetries: 5 });
 
         // Dequeue but don't await the promise — job is still processing

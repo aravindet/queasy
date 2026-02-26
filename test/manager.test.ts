@@ -1,30 +1,28 @@
 import assert from 'node:assert';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
+import type { Mock } from 'node:test';
 import { createClient } from 'redis';
-import { Client } from '../dist/index.js';
-import { Manager } from '../dist/manager.js';
+import type { RedisClientType } from 'redis';
+import { Client } from '../src/index.ts';
+import { Manager } from '../src/manager.ts';
+import type { Pool } from '../src/pool.ts';
+import type { Queue } from '../src/queue.ts';
+import type { HandlerOptions } from '../src/types.ts';
 
 describe('Manager unit tests', () => {
-    /**
-     * @param {object} [overrides]
-     * @returns {import('../dist/manager.js').Manager}
-     */
-    function createManager(overrides = {}) {
-        const pool = /** @type {import('../dist/pool.js').Pool} */ ({
-            capacity: 100,
-            ...overrides,
-        });
+    function createManager(overrides: Partial<Pool> = {}): Manager {
+        const pool = { capacity: 100, ...overrides } as Pool;
         return new Manager(pool);
     }
 
-    /**
-     * @param {{ handlerOptions?: Partial<import('../dist/types.js').HandlerOptions>, dequeue?: import('node:test').Mock<any> }} [overrides]
-     */
-    function mockQueue(overrides = {}) {
-        return /** @type {import('../dist/queue.js').Queue} */ ({
+    function mockQueue(overrides: {
+        handlerOptions?: Partial<HandlerOptions>;
+        dequeue?: Mock<() => Promise<{ count: number }>>;
+    } = {}): Queue {
+        return {
             handlerOptions: { size: 10, priority: 100, ...overrides.handlerOptions },
             dequeue: overrides.dequeue ?? mock.fn(async () => ({ count: 0 })),
-        });
+        } as unknown as Queue;
     }
 
     it('should return early from next() when queues are empty', async () => {
@@ -41,7 +39,7 @@ describe('Manager unit tests', () => {
         // Wait for next() to run (addQueue calls next via setTimeout)
         await new Promise((r) => setTimeout(r, 50));
         // dequeue should NOT have been called since capacity (5) < size (10)
-        assert.equal(/** @type {import('node:test').Mock<any>} */ (q.dequeue).mock.callCount(), 0);
+        assert.equal((q.dequeue as Mock<() => Promise<{ count: number }>>).mock.callCount(), 0);
         mgr.close();
     });
 
@@ -101,7 +99,7 @@ describe('Manager unit tests', () => {
         mgr.busyCount = 3;
         await mgr.next();
         // Lower priority value sorts before higher
-        const priorities = mgr.queues.map((e) => e.queue.handlerOptions.priority);
+        const priorities = mgr.queues.map((e) => e.queue.handlerOptions!.priority);
         assert.ok(priorities.indexOf(50) < priorities.indexOf(200));
         mgr.close();
     });
@@ -142,7 +140,7 @@ describe('Manager unit tests', () => {
         mgr.busyCount = 3;
         await mgr.next();
         // Among entries with same priority and lastDequeuedAt: smaller size sorts first
-        const sizes = mgr.queues.map((e) => e.queue.handlerOptions.size);
+        const sizes = mgr.queues.map((e) => e.queue.handlerOptions!.size);
         assert.ok(sizes.indexOf(5) < sizes.indexOf(20));
         mgr.close();
     });
@@ -151,10 +149,8 @@ describe('Manager unit tests', () => {
 const QUEUE_NAME = 'mgr-test';
 
 describe('Manager scheduling', () => {
-    /** @type {import('redis').RedisClientType} */
-    let redis;
-    /** @type {import('../dist/client.js').Client} */
-    let client;
+    let redis: RedisClientType;
+    let client: Client;
 
     beforeEach(async () => {
         redis = createClient();
@@ -179,7 +175,7 @@ describe('Manager scheduling', () => {
         const q = client.queue(QUEUE_NAME);
         const jobId = await q.dispatch({ task: 'managed' });
 
-        const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
+        const handlerPath = new URL('./fixtures/success-handler.ts', import.meta.url).pathname;
         await q.listen(handlerPath);
 
         // Wait for manager to dequeue and process the job fully
@@ -199,7 +195,7 @@ describe('Manager scheduling', () => {
         const jobId1 = await q1.dispatch({ q: 1 });
         const jobId2 = await q2.dispatch({ q: 2 });
 
-        const handlerPath = new URL('./fixtures/success-handler.js', import.meta.url).pathname;
+        const handlerPath = new URL('./fixtures/success-handler.ts', import.meta.url).pathname;
         await q1.listen(handlerPath);
         await q2.listen(handlerPath);
 
@@ -218,13 +214,7 @@ describe('Manager scheduling', () => {
     });
 });
 
-/**
- * Poll a condition until it returns true, with a timeout.
- * @param {() => Promise<boolean>} fn
- * @param {number} [timeout=5000]
- * @param {number} [interval=20]
- */
-async function poll(fn, timeout = 5000, interval = 20) {
+async function poll(fn: () => Promise<boolean>, timeout = 5000, interval = 20): Promise<void> {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
         if (await fn()) return;
