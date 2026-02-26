@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import { describe, it } from 'node:test';
-import { PermanentError, StallError } from '../src/errors.js';
+import { PermanentError, StallError } from '../dist/errors.js';
 
 describe('Error classes', () => {
     it('PermanentError has correct name and message', () => {

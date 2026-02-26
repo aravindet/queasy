@@ -1,16 +1,16 @@
 import assert from 'node:assert';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import { createClient } from 'redis';
-import { Client } from '../src/index.js';
-import { Manager } from '../src/manager.js';
+import { Client } from '../dist/index.js';
+import { Manager } from '../dist/manager.js';
 
 describe('Manager unit tests', () => {
     /**
      * @param {object} [overrides]
-     * @returns {import('../src/manager.js').Manager}
+     * @returns {import('../dist/manager.js').Manager}
      */
     function createManager(overrides = {}) {
-        const pool = /** @type {import('../src/pool.js').Pool} */ ({
+        const pool = /** @type {import('../dist/pool.js').Pool} */ ({
             capacity: 100,
             ...overrides,
         });
@@ -18,10 +18,10 @@ describe('Manager unit tests', () => {
     }
 
     /**
-     * @param {{ handlerOptions?: Partial<import('../src/types.js').HandlerOptions>, dequeue?: import('node:test').Mock<any> }} [overrides]
+     * @param {{ handlerOptions?: Partial<import('../dist/types.js').HandlerOptions>, dequeue?: import('node:test').Mock<any> }} [overrides]
      */
     function mockQueue(overrides = {}) {
-        return /** @type {import('../src/queue.js').ProcessingQueue} */ ({
+        return /** @type {import('../dist/queue.js').Queue} */ ({
             handlerOptions: { size: 10, priority: 100, ...overrides.handlerOptions },
             dequeue: overrides.dequeue ?? mock.fn(async () => ({ count: 0 })),
         });
@@ -153,7 +153,7 @@ const QUEUE_NAME = 'mgr-test';
 describe('Manager scheduling', () => {
     /** @type {import('redis').RedisClientType} */
     let redis;
-    /** @type {import('../src/client.js').Client} */
+    /** @type {import('../dist/client.js').Client} */
     let client;
 
     beforeEach(async () => {

@@ -1,5 +1,8 @@
 {
     "$schema": "https://biomejs.dev/schemas/2.3.14/schema.json",
+    "files": {
+        "includes": ["**", "!!dist"]
+    },
     "assist": { "actions": { "source": { "organizeImports": "on" } } },
     "linter": {
         "enabled": true,
@@ -9,7 +12,8 @@
                 "noForEach": "off"
             },
             "style": {
-                "useNodejsImportProtocol": "error"
+                "useNodejsImportProtocol": "error",
+                "noNonNullAssertion": "off"
             }
         }
     },

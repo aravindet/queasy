@@ -1,4 +1,4 @@
-import { PermanentError } from '../../src/errors.js';
+import { PermanentError } from '../../dist/errors.js';
 
 /**
  * Handler that throws a PermanentError

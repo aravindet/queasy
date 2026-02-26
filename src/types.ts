@@ -92,6 +92,7 @@ export interface ListenOptions extends HandlerOptions {
 export type ExecMessage = {
     op: 'exec';
     queue: string;
+    handlerPath: string;
     job: Job;
 };
 

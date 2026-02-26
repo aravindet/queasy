@@ -1,9 +1,4 @@
-/**
- * Generate a random alphanumeric ID
- * @param {number} length - Length of the ID
- * @returns {string}
- */
-export function generateId(length = 20) {
+export function generateId(length = 20): string {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     let id = '';
     for (let i = 0; i < length; i++) {
@@ -12,25 +7,13 @@ export function generateId(length = 20) {
     return id;
 }
 
-/**
- * Parse a semver string like '1.0' into { major, minor }
- * Used by compareSemver
- * @param {string?} version
- * @returns {number[]}
- */
-export function parseVersion(version) {
+export function parseVersion(version: string | null | undefined): number[] {
     const parsed = String(version).split('.').map(Number);
     if (parsed.some((n) => Number.isNaN(n))) return [0];
     return parsed;
 }
 
-/**
- * Compare two semver strings. Returns -1 if a < b, 0 if equal, 1 if a > b.
- * @param {number[]} a
- * @param {number[]} b
- * @returns {-1 | 0 | 1}
- */
-export function compareSemver(a, b) {
+export function compareSemver(a: number[], b: number[]): -1 | 0 | 1 {
     for (let i = 0; i < Math.min(a.length, b.length); i++) {
         if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
     }

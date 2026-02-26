@@ -1,8 +1,6 @@
-/** @typedef {import('./types').HandlerOptions} HandlerOptions */
-/** @typedef {import('./types').JobUpdateOptions} JobUpdateOptions */
+import type { HandlerOptions, JobUpdateOptions } from './types.js';
 
-/** @type {Required<HandlerOptions>} */
-export const DEFAULT_RETRY_OPTIONS = {
+export const DEFAULT_RETRY_OPTIONS: Required<HandlerOptions> = {
     maxRetries: 10,
     maxStalls: 3,
     minBackoff: 2_000,
@@ -12,15 +10,13 @@ export const DEFAULT_RETRY_OPTIONS = {
     priority: 100,
 };
 
-/** @type {Required<JobUpdateOptions>} */
-export const DEFAULT_UPDATE_OPTIONS = {
+export const DEFAULT_UPDATE_OPTIONS: Required<JobUpdateOptions> = {
     updateData: true,
     updateRunAt: true,
     resetCounts: false,
 };
 
-/** @type {Required<HandlerOptions>} */
-export const FAILJOB_RETRY_OPTIONS = {
+export const FAILJOB_RETRY_OPTIONS: Required<HandlerOptions> = {
     maxRetries: 100,
     maxStalls: 3,
     minBackoff: 10_000,

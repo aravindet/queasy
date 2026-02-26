@@ -1,43 +1,41 @@
 import { availableParallelism } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { WORKER_CAPACITY } from './constants.js';
+import type { DoneMessage, Job } from './types.js';
 import { generateId } from './utils.js';
 
-/** @typedef {import('./types').DoneMessage} DoneMessage */
-/** @typedef {import('./types').Job} Job */
+interface WorkerEntry {
+    worker: Worker;
+    capacity: number;
+    id: string;
+    jobCount: number;
+    stalledJobs: Set<string>;
+}
 
-/** @typedef {{
- *      worker: Worker,
- *      capacity: number,
- *      id: string,
- *      jobCount: number,
- *      stalledJobs: Set<string>
- * }} WorkerEntry */
-
-/** @typedef {{
- *      resolve: (value: DoneMessage) => void,
- *      reject: (reason: DoneMessage) => void,
- *      size: number,
- *      timer: NodeJS.Timeout
- *  }} JobEntry */
+interface JobEntry {
+    resolve: (value: DoneMessage) => void;
+    reject: (reason: DoneMessage) => void;
+    size: number;
+    timer: NodeJS.Timeout;
+}
 
 export class Pool {
-    /** @param {number?} targetCount - Number of desired workers */
-    constructor(targetCount) {
-        /** @type {Set<WorkerEntry>} */
-        this.workers = new Set();
-        /** @type {Map<string, JobEntry>} */
-        this.activeJobs = new Map();
+    workers: Set<WorkerEntry>;
+    activeJobs: Map<string, JobEntry>;
+    capacity: number;
 
+    constructor(targetCount?: number | null) {
+        this.workers = new Set();
+        this.activeJobs = new Map();
         this.capacity = 0;
 
         const count = targetCount ?? availableParallelism();
         for (let i = 0; i < count; i++) this.createWorker();
     }
 
-    createWorker() {
+    createWorker(): void {
         const worker = new Worker(new URL('./worker.js', import.meta.url));
-        const entry = {
+        const entry: WorkerEntry = {
             worker,
             capacity: WORKER_CAPACITY,
             id: generateId(),
@@ -49,11 +47,7 @@ export class Pool {
         this.workers.add(entry);
     }
 
-    /**
-     * @param {WorkerEntry} workerEntry
-     * @param {DoneMessage} message
-     */
-    handleWorkerMessage(workerEntry, message) {
+    handleWorkerMessage(workerEntry: WorkerEntry, message: DoneMessage): void {
         const { jobId, error } = message;
         const jobEntry = this.activeJobs.get(jobId);
         if (!jobEntry) {
@@ -65,40 +59,24 @@ export class Pool {
         this.capacity += jobEntry.size;
         workerEntry.jobCount -= 1;
 
-        // If this job was previously marked as stalled, unmark it.
         if (workerEntry.stalledJobs.has(jobId)) workerEntry.stalledJobs.delete(jobId);
 
         this.activeJobs.delete(jobId);
         jobEntry[error ? 'reject' : 'resolve'](message);
 
-        // If this worker is no longer in the the pool, check if it can be terminated.
         if (!this.workers.has(workerEntry)) this.terminateIfEmpty(workerEntry);
     }
 
-    /**
-     *
-     * @param {WorkerEntry} workerEntry
-     * @param {string} jobId
-     */
-    handleTimeout(workerEntry, jobId) {
+    handleTimeout(workerEntry: WorkerEntry, jobId: string): void {
         workerEntry.stalledJobs.add(jobId);
 
-        // Remove and replace this worker in the pool (if it wasn’t already).
         if (this.workers.delete(workerEntry)) this.createWorker();
         this.capacity -= workerEntry.capacity;
 
-        // If this is the last job in this worker, terminate it.
         this.terminateIfEmpty(workerEntry);
     }
 
-    /**
-     * Stops adding new jobs to a worker if it has stalled jobs.
-     * Terminates workers if all remaining jobs are stalled.
-     * @param {WorkerEntry} workerEntry
-     * @returns
-     */
-    async terminateIfEmpty({ stalledJobs, jobCount, worker }) {
-        // Don't destroy if there are still non-stalled jobs running.
+    async terminateIfEmpty({ stalledJobs, jobCount, worker }: WorkerEntry): Promise<void> {
         if (jobCount > stalledJobs.size) return;
         await worker.terminate();
 
@@ -113,38 +91,26 @@ export class Pool {
         }
     }
 
-    /**
-     * Processes a job to the most free worker
-     * @param {string} handlerPath
-     * @param {Job} job
-     * @param {number} size
-     * @param {number} timeout - Maximum time in ms
-     * @returns {Promise<DoneMessage>}
-     */
-    process(handlerPath, job, size, timeout) {
-        // Find worker with most capacity
-        let workerEntry = null;
+    process(handlerPath: string, job: Job, size: number, timeout: number): Promise<DoneMessage> {
+        let workerEntry: WorkerEntry | null = null;
         for (const entry of this.workers) {
             if (!workerEntry || entry.capacity > workerEntry.capacity) workerEntry = entry;
         }
 
-        if (!workerEntry) throw Error('Can’t process job without workers');
+        if (!workerEntry) throw Error("Can't process job without workers");
 
-        const timer = setTimeout(() => this.handleTimeout(workerEntry, job.id), timeout);
+        const timer = setTimeout(() => this.handleTimeout(workerEntry!, job.id), timeout);
 
         return new Promise((resolve, reject) => {
             this.activeJobs.set(job.id, { resolve, reject, size, timer });
-            workerEntry.capacity -= size;
+            workerEntry!.capacity -= size;
             this.capacity -= size;
-            workerEntry.jobCount += 1;
-            workerEntry.worker.postMessage({ op: 'exec', handlerPath, job });
+            workerEntry!.jobCount += 1;
+            workerEntry!.worker.postMessage({ op: 'exec', handlerPath, job });
         });
     }
 
-    /**
-     * Terminates all workers
-     */
-    async close() {
+    async close(): Promise<void> {
         await Promise.all([...this.workers].map(async ({ worker }) => worker.terminate()));
         for (const [jobId, { reject, timer }] of this.activeJobs.entries()) {
             clearTimeout(timer);

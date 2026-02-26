@@ -1,14 +1,14 @@
 import assert from 'node:assert';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import { createClient } from 'redis';
-import { Client } from '../src/index.js';
+import { Client } from '../dist/index.js';
 
 const QUEUE_NAME = 'test';
 
 describe('Queue E2E', () => {
     /** @type {import('redis').RedisClientType} */
     let redis;
-    /** @type {import('../src/client.js').Client}*/
+    /** @type {import('../dist/client.js').Client}*/
     let client;
 
     beforeEach(async () => {

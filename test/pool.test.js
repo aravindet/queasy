@@ -1,8 +1,8 @@
 import assert from 'node:assert';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import { createClient } from 'redis';
-import { Client } from '../src/index.js';
-import { Pool } from '../src/pool.js';
+import { Client } from '../dist/index.js';
+import { Pool } from '../dist/pool.js';
 
 describe('Pool unit tests', () => {
     /** Helper to create a fake job entry with a no-op timer */
@@ -13,7 +13,7 @@ describe('Pool unit tests', () => {
 
     /** @param {Pool} pool */
     function getWorker(pool) {
-        const entry = /** @type {import('../src/pool.js').WorkerEntry} */ (
+        const entry = /** @type {import('../dist/pool.js').WorkerEntry} */ (
             pool.workers.values().next().value
         );
         return entry;
@@ -102,7 +102,7 @@ const QUEUE_NAME = 'pool-test';
 describe('Pool stall and timeout', () => {
     /** @type {import('redis').RedisClientType} */
     let redis;
-    /** @type {import('../src/client.js').Client} */
+    /** @type {import('../dist/client.js').Client} */
     let client;
 
     beforeEach(async () => {

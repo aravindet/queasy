@@ -10,7 +10,8 @@ npm test -- --test-name-pattern="pattern"  # Run tests matching a pattern
 node --test test/queue.test.js             # Run a single test file
 npm run lint              # Lint with Biome
 npm run format            # Auto-format with Biome
-npm run typecheck         # TypeScript check via jsconfig.json (JSDoc types)
+npm run build             # Compile TypeScript to dist/
+npm run typecheck         # TypeScript type-check without emitting
 npm run docker:up         # Start Redis via Docker Compose
 npm run docker:down       # Stop Redis
 ```
@@ -21,7 +22,7 @@ Tests require a running Redis instance. Use `docker:up` first if needed.
 
 Queasy is a Redis-backed job queue with **at-least-once** delivery semantics. The core logic lives in two layers:
 
-- **JS layer** (`src/client.js`): The `Client` class accepts a `RedisOptions` object and constructs its own node-redis connection via `createClient` (plain object) or `createCluster` (object with `rootNodes`). On construction it connects, then uploads the Lua script to Redis via `FUNCTION LOAD REPLACE`. The connection is torn down in `close()` via `destroy()`.
+- **TypeScript layer** (`src/client.ts`): The `Client` class accepts a `RedisOptions` object and constructs its own node-redis connection via `createClient` (plain object) or `createCluster` (object with `rootNodes`). On construction it connects, then uploads the Lua script to Redis via `FUNCTION LOAD REPLACE`. The connection is torn down in `close()` via `destroy()`. Source compiles to `dist/` via `npm run build`.
 - **Lua layer** (`src/queasy.lua`): All queue state mutations are atomic Redis functions registered under the `queasy` library. No queue logic should be duplicated in JS — the Lua functions are the single source of truth for state transitions.
 
 ### Redis data structures
@@ -77,7 +78,7 @@ Queue names in tests use `{curly-brace}` syntax (e.g., `{test-api-queue}`) to ke
 ## Conventions
 
 - ESM modules throughout (`"type": "module"` in package.json).
-- JSDoc types with a `types.ts` file for IDE support; run `npm run typecheck` to verify.
-- Biome for formatting (tabs, single quotes, 100-char width). Run `npm run format` before committing.
+- TypeScript source in `src/`, compiled output in `dist/`. Run `npm run build` before running tests.
+- Biome for formatting (spaces, single quotes, 100-char width). Run `npm run format` before committing.
 - All Lua booleans arrive as strings (`'true'`/`'false'`) from `redis.fCall` — comparisons in Lua must use string equality.
 - `redis.setresp(3)` is called in each registered function to get RESP3 map responses (needed for `HGETALL` returning `{ map: {...} }` instead of a flat array).

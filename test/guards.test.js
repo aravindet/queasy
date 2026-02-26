@@ -1,10 +1,10 @@
 import assert from 'node:assert';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import { createClient } from 'redis';
-import { Client } from '../src/index.js';
+import { Client } from '../dist/index.js';
 
 describe('Client disconnect guard', () => {
-    /** @type {import('../src/client.js').Client} */
+    /** @type {import('../dist/client.js').Client} */
     let client;
 
     beforeEach(() => {
@@ -24,7 +24,7 @@ describe('Client disconnect guard', () => {
 });
 
 describe('Queue disconnect guards', () => {
-    /** @type {import('../src/client.js').Client} */
+    /** @type {import('../dist/client.js').Client} */
     let client;
 
     beforeEach(() => {
@@ -67,7 +67,7 @@ describe('Queue disconnect guards', () => {
 describe('Client bump lost lock', () => {
     /** @type {import('redis').RedisClientType} */
     let redis;
-    /** @type {import('../src/client.js').Client} */
+    /** @type {import('../dist/client.js').Client} */
     let client;
 
     const QUEUE_NAME = 'bump-lock-test';
