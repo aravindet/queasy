@@ -1,8 +1,8 @@
 import { availableParallelism } from 'node:os';
 import { Worker } from 'node:worker_threads';
-import { WORKER_CAPACITY } from './constants.js';
-import type { DoneMessage, Job } from './types.js';
-import { generateId } from './utils.js';
+import { WORKER_CAPACITY } from './constants.ts';
+import type { DoneMessage, Job } from './types.ts';
+import { generateId } from './utils.ts';
 
 interface WorkerEntry {
     worker: Worker;

@@ -5,12 +5,12 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getEnvironmentData } from 'node:worker_threads';
 import { createClient, createCluster } from 'redis';
-import { HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT, LUA_FUNCTIONS_VERSION } from './constants.js';
-import { Manager } from './manager.js';
-import { Pool } from './pool.js';
-import { Queue } from './queue.js';
-import type { Job, RedisOptions } from './types.js';
-import { compareSemver, generateId, parseVersion } from './utils.js';
+import { HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT, LUA_FUNCTIONS_VERSION } from './constants.ts';
+import { Manager } from './manager.ts';
+import { Pool } from './pool.ts';
+import { Queue } from './queue.ts';
+import type { Job, RedisOptions } from './types.ts';
+import { compareSemver, generateId, parseVersion } from './utils.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const luaScript = readFileSync(join(__dirname, 'queasy.lua'), 'utf8').replace(

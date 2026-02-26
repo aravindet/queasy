@@ -1,9 +1,10 @@
 {
     "compilerOptions": {
         "strict": true,
-        "target": "ES2022",
-        "module": "NodeNext",
-        "moduleResolution": "NodeNext",
+        "target": "esnext",
+        "module": "nodenext",
+        "moduleResolution": "nodenext",
+        "rewriteRelativeImportExtensions": true,
         "outDir": "dist",
         "rootDir": "src",
         "declaration": true,
@@ -11,6 +12,7 @@
         "sourceMap": true,
         "skipLibCheck": true,
         "forceConsistentCasingInFileNames": true,
+        "erasableSyntaxOnly": true,
         "resolveJsonModule": true,
         "lib": ["ES2022"]
     },

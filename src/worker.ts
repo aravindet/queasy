@@ -1,7 +1,7 @@
 import { pathToFileURL } from 'node:url';
 import { parentPort, setEnvironmentData } from 'node:worker_threads';
-import { PermanentError } from './errors.js';
-import type { DoneMessage, ExecMessage } from './types.js';
+import { PermanentError } from './errors.ts';
+import type { DoneMessage, ExecMessage } from './types.ts';
 
 if (!parentPort) throw new Error('Worker cannot be executed directly.');
 setEnvironmentData('queasy_worker_context', true);

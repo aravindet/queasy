@@ -1,9 +1,9 @@
-import type { Client } from './client.js';
-import { DEFAULT_RETRY_OPTIONS, FAILJOB_RETRY_OPTIONS } from './constants.js';
-import type { Manager } from './manager.js';
-import type { Pool } from './pool.js';
-import type { DoneMessage, HandlerOptions, Job, JobOptions, ListenOptions } from './types.js';
-import { generateId } from './utils.js';
+import type { Client } from './client.ts';
+import { DEFAULT_RETRY_OPTIONS, FAILJOB_RETRY_OPTIONS } from './constants.ts';
+import type { Manager } from './manager.ts';
+import type { Pool } from './pool.ts';
+import type { DoneMessage, HandlerOptions, Job, JobOptions, ListenOptions } from './types.ts';
+import { generateId } from './utils.ts';
 
 export class Queue {
     key: string;

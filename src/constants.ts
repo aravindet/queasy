@@ -1,4 +1,4 @@
-import type { HandlerOptions, JobUpdateOptions } from './types.js';
+import type { HandlerOptions, JobUpdateOptions } from './types.ts';
 
 export const DEFAULT_RETRY_OPTIONS: Required<HandlerOptions> = {
     maxRetries: 10,

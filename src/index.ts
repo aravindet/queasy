@@ -1,2 +1,2 @@
-export { Client } from './client.js';
-export { PermanentError, StallError } from './errors.js';
+export { Client } from './client.ts';
+export { PermanentError, StallError } from './errors.ts';

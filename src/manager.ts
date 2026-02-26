@@ -1,6 +1,6 @@
-import { DEQUEUE_INTERVAL } from './constants.js';
-import type { Pool } from './pool.js';
-import type { Queue } from './queue.js';
+import { DEQUEUE_INTERVAL } from './constants.ts';
+import type { Pool } from './pool.ts';
+import type { Queue } from './queue.ts';
 
 interface QueueEntry {
     queue: Queue;
