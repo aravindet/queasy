@@ -6,14 +6,14 @@ import { Client } from '../src/index.ts';
 
 const QUEUE_NAME = 'client-test';
 
-describe.skip('Client heartbeat', () => {
+describe('Client heartbeat', () => {
     let redis: RedisClientType;
     let client: Client;
 
     beforeEach(async () => {
         redis = createClient();
         await redis.connect();
-        client = new Client({}, 1);
+        client = await new Promise<Client>((res) => new Client({}, 1, res));
         client.scheduleBump = mock.fn();
         if (client.manager) client.manager.addQueue = mock.fn();
     });
