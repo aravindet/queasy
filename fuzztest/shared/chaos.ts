@@ -3,7 +3,9 @@
  * All handlers apply the same set of chaos behaviors.
  */
 
-const BEHAVIORS = [
+type ChaosAction = 'normal' | 'retriable' | 'permanent' | 'stall' | 'spin' | 'crash';
+
+const BEHAVIORS: { action: ChaosAction; weight: number }[] = [
     { action: 'normal', weight: 65 },
     { action: 'retriable', weight: 15 },
     { action: 'permanent', weight: 5 },
@@ -16,13 +18,12 @@ const TOTAL_WEIGHT = BEHAVIORS.reduce((sum, b) => sum + b.weight, 0);
 
 /**
  * Pick a chaos action based on weighted probability.
- * @returns {'normal' | 'retriable' | 'permanent' | 'stall' | 'spin' | 'crash'}
  */
-export function pickChaos() {
+export function pickChaos(): ChaosAction {
     let r = Math.random() * TOTAL_WEIGHT;
     for (const { action, weight } of BEHAVIORS) {
         r -= weight;
-        if (r <= 0) return /** @type {any} */ (action);
+        if (r <= 0) return action;
     }
     return 'normal';
 }

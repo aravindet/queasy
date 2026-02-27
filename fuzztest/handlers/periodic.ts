@@ -6,28 +6,24 @@
 
 import { BroadcastChannel } from 'node:worker_threads';
 import { createClient } from 'redis';
-import { Client, PermanentError } from '../../src/index.js';
-import { pickChaos } from '../shared/chaos.js';
-import { emitEvent } from '../shared/stream.js';
+import type { RedisClientType } from 'redis';
+import { Client, PermanentError } from '../../src/index.ts';
+import type { Job } from '../../src/types.ts';
+import { pickChaos } from '../shared/chaos.ts';
+import { emitEvent } from '../shared/stream.ts';
 
-const redis = createClient();
-const eventRedis = createClient();
-
-await redis.connect();
+const eventRedis = createClient() as RedisClientType;
 await eventRedis.connect();
 
 // Dispatch-only queasy client (await ready to avoid Function not found race)
-const client = await new Promise((resolve) => new Client(redis, 0, resolve));
+const client = await new Promise<Client>((resolve) => new Client({}, 0, resolve));
 const periodicQueue = client.queue('{fuzz}:periodic', true);
 const cascadeAQueue = client.queue('{fuzz}:cascade-a', true);
 
 const crashChannel = new BroadcastChannel('fuzz-crash');
 
-/**
- * @param {any} data
- * @param {import('../../src/types.js').Job} job
- */
-export async function handle(data, job) {
+// biome-ignore lint/suspicious/noExplicitAny: Job data is arbitrary
+export async function handle(data: any, job: Job): Promise<void> {
     const startedAt = Date.now();
     await emitEvent(eventRedis, {
         type: 'start',

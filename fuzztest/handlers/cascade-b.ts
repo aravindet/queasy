@@ -5,20 +5,19 @@
 
 import { BroadcastChannel } from 'node:worker_threads';
 import { createClient } from 'redis';
-import { PermanentError } from '../../src/index.js';
-import { pickChaos } from '../shared/chaos.js';
-import { emitEvent } from '../shared/stream.js';
+import type { RedisClientType } from 'redis';
+import { PermanentError } from '../../src/index.ts';
+import type { Job } from '../../src/types.ts';
+import { pickChaos } from '../shared/chaos.ts';
+import { emitEvent } from '../shared/stream.ts';
 
-const eventRedis = createClient();
+const eventRedis = createClient() as RedisClientType;
 await eventRedis.connect();
 
 const crashChannel = new BroadcastChannel('fuzz-crash');
 
-/**
- * @param {any} data
- * @param {import('../../src/types.js').Job} job
- */
-export async function handle(_data, job) {
+// biome-ignore lint/suspicious/noExplicitAny: Job data is arbitrary
+export async function handle(_data: any, job: Job): Promise<void> {
     const startedAt = Date.now();
     await emitEvent(eventRedis, {
         type: 'start',

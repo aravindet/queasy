@@ -1,7 +1,7 @@
 /**
  * Fuzz test orchestrator.
  *
- * - Spawns NUM_PROCESSES child processes, each running fuzztest/process.js
+ * - Spawns NUM_PROCESSES child processes, each running fuzztest/process.ts
  * - Dispatches seed periodic jobs at startup
  * - Reads events from the fuzz:events Redis stream
  * - Checks system invariants after each event
@@ -10,12 +10,14 @@
  */
 
 import { fork } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createClient } from 'redis';
-import { Client } from '../src/index.js';
-import { readEvents, STREAM_KEY } from './shared/stream.js';
+import type { RedisClientType } from 'redis';
+import { Client } from '../src/index.ts';
+import { STREAM_KEY, readEvents } from './shared/stream.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -35,7 +37,7 @@ const LOG_FILE = join(__dirname, '..', 'fuzz-output.log');
 
 const logStream = createWriteStream(LOG_FILE, { flags: 'a' });
 
-function log(level, msg, data = {}) {
+function log(level: string, msg: string, data: Record<string, unknown> = {}): void {
     const entry = JSON.stringify({ time: new Date().toISOString(), level, msg, data });
     if (level === 'error') process.stdout.write(`VIOLATION: ${entry}\n`);
     else process.stdout.write(`${entry}\n`);
@@ -44,38 +46,51 @@ function log(level, msg, data = {}) {
 
 // ── Invariant state ────────────────────────────────────────────────────────────
 
-/** @type {Map<string, {queue: string, startedAt: number, runAt: number, pid: number}>} */
-const activeJobs = new Map();
+interface ActiveJob {
+    queue: string;
+    startedAt: number;
+    runAt: number;
+    pid: number;
+}
 
-/** @type {Set<string>} */
-const succeededJobs = new Set();
+interface WaitingJob {
+    id: string;
+    runAt: number;
+    dispatchedAt: number;
+}
+
+const activeJobs = new Map<string, ActiveJob>();
+const succeededJobs = new Set<string>();
 
 /**
  * Per-queue: list of {id, runAt, dispatchedAt} for jobs seen but not yet started.
  * Used to check priority ordering.
- * @type {Map<string, {id: string, runAt: number, dispatchedAt: number}[]>}
  */
-const waitingByQueue = new Map();
+const waitingByQueue = new Map<string, WaitingJob[]>();
 
-/** @type {Map<string, number>} last start event timestamp per queue */
-const lastStartPerQueue = new Map();
+/** last start event timestamp per queue */
+const lastStartPerQueue = new Map<string, number>();
 
 let violationCount = 0;
 let eventCount = 0;
 
-function violation(invariant, msg, data = {}) {
+function violation(invariant: string, msg: string, data: Record<string, unknown> = {}): void {
     violationCount++;
     log('error', `[${invariant}] ${msg}`, data);
 }
 
 // ── Invariant checks ───────────────────────────────────────────────────────────
 
+interface IpcDequeueMsg {
+    queue: string;
+    jobId: string;
+    runAt: number;
+}
+
 /**
  * Called when a child process dequeues a job (via IPC).
- * @param {number} pid
- * @param {{queue: string, jobId: string, runAt: number}} msg
  */
-function onIpcDequeue(pid, msg) {
+function onIpcDequeue(pid: number, msg: IpcDequeueMsg): void {
     const { jobId: id, queue, runAt } = msg;
 
     // Mutual exclusion: job must not already be active
@@ -92,13 +107,12 @@ function onIpcDequeue(pid, msg) {
 
 /**
  * Called when a child process finishes/retries/fails a job (via IPC).
- * @param {string} jobId
  */
-function onIpcJobDone(jobId) {
+function onIpcJobDone(jobId: string): void {
     activeJobs.delete(jobId);
 }
 
-function onStart(event) {
+function onStart(event: Record<string, string>): void {
     const { id, queue, runAt: runAtStr, startedAt: startedAtStr } = event;
     const runAt = Number(runAtStr);
     const startedAt = Number(startedAtStr);
@@ -148,12 +162,12 @@ function onStart(event) {
     if (waitingByQueue.has(queue)) {
         waitingByQueue.set(
             queue,
-            waitingByQueue.get(queue).filter((w) => w.id !== id)
+            (waitingByQueue.get(queue) ?? []).filter((w) => w.id !== id)
         );
     }
 }
 
-function onFinish(event) {
+function onFinish(event: Record<string, string>): void {
     succeededJobs.add(event.id);
 }
 
@@ -161,9 +175,8 @@ function onFinish(event) {
  * Called when a child process exits. Clears all active jobs belonging to that
  * PID so they don't trigger spurious MutualExclusion violations when the
  * queasy sweep retries them and a new process picks them up.
- * @param {number} pid
  */
-function onProcessExit(pid) {
+function onProcessExit(pid: number): void {
     for (const [id, entry] of activeJobs) {
         if (entry.pid === pid) {
             activeJobs.delete(id);
@@ -174,7 +187,7 @@ function onProcessExit(pid) {
 /**
  * Called periodically to check queue progress and priority starvation.
  */
-function checkProgress() {
+function checkProgress(): void {
     const now = Date.now();
     for (const [queue, lastStart] of lastStartPerQueue) {
         const idle = now - lastStart;
@@ -209,7 +222,7 @@ function checkProgress() {
 
 // ── Event dispatch ─────────────────────────────────────────────────────────────
 
-function handleEvent(event) {
+function handleEvent(event: Record<string, string>): void {
     eventCount++;
     const { type } = event;
     log('info', 'event', event);
@@ -231,7 +244,7 @@ function handleEvent(event) {
 
 // ── Summary ────────────────────────────────────────────────────────────────────
 
-function printSummary() {
+function printSummary(): void {
     const summary = {
         events: eventCount,
         violations: violationCount,
@@ -250,16 +263,15 @@ function printSummary() {
 
 // ── Child process management ───────────────────────────────────────────────────
 
-/** @type {Set<import('node:child_process').ChildProcess>} */
-const processes = new Set();
+const processes = new Set<ChildProcess>();
 
-function spawnProcess() {
-    const child = fork(join(__dirname, 'process.js'));
+function spawnProcess(): ChildProcess {
+    const child = fork(join(__dirname, 'process.ts'));
     processes.add(child);
 
-    child.on('message', (msg) => {
+    child.on('message', (msg: { type: string; queue: string; jobId: string; runAt: number }) => {
         if (msg.type === 'dequeue') {
-            onIpcDequeue(child.pid, msg);
+            onIpcDequeue(child.pid!, msg);
         } else if (msg.type === 'finish' || msg.type === 'retry' || msg.type === 'fail') {
             onIpcJobDone(msg.jobId);
         }
@@ -268,7 +280,7 @@ function spawnProcess() {
     child.on('exit', (code, signal) => {
         processes.delete(child);
         log('info', 'Child process exited', { pid: child.pid, code, signal });
-        onProcessExit(child.pid);
+        onProcessExit(child.pid!);
         setTimeout(spawnProcess, PROCESS_RESTART_DELAY_MS);
     });
 
@@ -279,7 +291,7 @@ function spawnProcess() {
     return child;
 }
 
-function killRandomProcess() {
+function killRandomProcess(): void {
     const list = [...processes];
     if (list.length === 0) return;
     const target = list[Math.floor(Math.random() * list.length)];
@@ -289,18 +301,15 @@ function killRandomProcess() {
 
 // ── Redis setup ────────────────────────────────────────────────────────────────
 
-const redis = createClient();
-const dispatchRedis = createClient();
-
+const redis = createClient() as RedisClientType;
 await redis.connect();
-await dispatchRedis.connect();
 
 // Clean up state from previous runs
 await redis.del(STREAM_KEY);
 log('info', 'Cleared fuzz:events stream from previous run');
 
 // Dispatch seed periodic jobs (await ready to avoid Function not found race)
-const dispatchClient = await new Promise((resolve) => new Client(dispatchRedis, 0, resolve));
+const dispatchClient = await new Promise<Client>((resolve) => new Client({}, 0, resolve));
 const periodicQueue = dispatchClient.queue('{fuzz}:periodic', true);
 
 for (let i = 0; i < NUM_PERIODIC_JOBS; i++) {

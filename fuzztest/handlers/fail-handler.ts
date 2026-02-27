@@ -9,26 +9,21 @@
  */
 
 import { createClient } from 'redis';
-import { Client } from '../../src/index.js';
-import { emitEvent } from '../shared/stream.js';
+import type { RedisClientType } from 'redis';
+import { Client } from '../../src/index.ts';
+import type { Job } from '../../src/types.ts';
+import { emitEvent } from '../shared/stream.ts';
 
-const redis = createClient();
-const eventRedis = createClient();
-
-await redis.connect();
+const eventRedis = createClient() as RedisClientType;
 await eventRedis.connect();
 
 // Dispatch-only queasy client (await ready to avoid Function not found race)
-const client = await new Promise((resolve) => new Client(redis, 0, resolve));
+const client = await new Promise<Client>((resolve) => new Client({}, 0, resolve));
 
 // Queue references (keys already include braces)
 const periodicQueue = client.queue('{fuzz}:periodic', true);
 
-/**
- * @param {[string, any, {message: string}]} data
- * @param {import('../../src/types.js').Job} job
- */
-export async function handle(data, job) {
+export async function handle(data: [string, unknown, { message: string }], job: Job): Promise<void> {
     const [originalId, originalData, error] = data;
 
     await emitEvent(eventRedis, {

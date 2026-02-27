@@ -9,7 +9,7 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BroadcastChannel } from 'node:worker_threads';
-import { Client } from '../src/index.js';
+import { Client } from '../src/index.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -33,10 +33,10 @@ const FAIL_RETRY_OPTIONS = {
 
 // ── Handler paths ──────────────────────────────────────────────────────────────
 
-const failHandlerPath = join(__dirname, 'handlers', 'fail-handler.js');
-const periodicPath = join(__dirname, 'handlers', 'periodic.js');
-const cascadeAPath = join(__dirname, 'handlers', 'cascade-a.js');
-const cascadeBPath = join(__dirname, 'handlers', 'cascade-b.js');
+const failHandlerPath = join(__dirname, 'handlers', 'fail-handler.ts');
+const periodicPath = join(__dirname, 'handlers', 'periodic.ts');
+const cascadeAPath = join(__dirname, 'handlers', 'cascade-a.ts');
+const cascadeBPath = join(__dirname, 'handlers', 'cascade-b.ts');
 
 // ── Crash signal ───────────────────────────────────────────────────────────────
 
@@ -48,26 +48,26 @@ crashChannel.onmessage = () => {
 
 // ── Redis + queasy client ──────────────────────────────────────────────────────
 
-const client = await new Promise((resolve) => new Client({}, WORKER_THREADS, resolve));
+const client = await new Promise<Client>((resolve) => new Client({}, WORKER_THREADS, resolve));
 
-client.on('disconnected', (reason) => {
+client.on('disconnected', (reason: string) => {
     console.error(`[process ${process.pid}] Client disconnected: ${reason}`);
     process.exit(1);
 });
 
 // Forward client lifecycle events to the orchestrator via IPC.
 // The orchestrator uses these to authoritatively track active jobs.
-client.on('dequeue', (queue, job) => {
-    process.send({ type: 'dequeue', queue, jobId: job.id, runAt: job.runAt });
+client.on('dequeue', (queue: string, job: { id: string; runAt: number }) => {
+    process.send!({ type: 'dequeue', queue, jobId: job.id, runAt: job.runAt });
 });
-client.on('finish', (queue, jobId) => {
-    process.send({ type: 'finish', queue, jobId });
+client.on('finish', (queue: string, jobId: string) => {
+    process.send!({ type: 'finish', queue, jobId });
 });
-client.on('retry', (queue, jobId) => {
-    process.send({ type: 'retry', queue, jobId });
+client.on('retry', (queue: string, jobId: string) => {
+    process.send!({ type: 'retry', queue, jobId });
 });
-client.on('fail', (queue, jobId) => {
-    process.send({ type: 'fail', queue, jobId });
+client.on('fail', (queue: string, jobId: string) => {
+    process.send!({ type: 'fail', queue, jobId });
 });
 
 // ── Queue setup ────────────────────────────────────────────────────────────────

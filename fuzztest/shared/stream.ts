@@ -3,14 +3,14 @@
  * All events are written to the 'fuzz:events' stream.
  */
 
+import type { RedisClientType } from 'redis';
+
 export const STREAM_KEY = 'fuzz:events';
 
 /**
  * Emit a structured event to the fuzz:events stream.
- * @param {import('redis').RedisClientType} redis
- * @param {Record<string, string>} fields
  */
-export async function emitEvent(redis, fields) {
+export async function emitEvent(redis: RedisClientType, fields: Record<string, string>): Promise<void> {
     try {
         await redis.xAdd(STREAM_KEY, '*', fields);
     } catch {
@@ -21,11 +21,11 @@ export async function emitEvent(redis, fields) {
 /**
  * Async generator that yields parsed event objects from the fuzz:events stream.
  * Blocks for up to 1 second waiting for new events, then yields control back.
- * @param {import('redis').RedisClientType} redis
- * @param {string} [lastId='0'] - Stream ID to start reading from ('0' = from beginning, '$' = new only)
- * @yields {Record<string, string>}
  */
-export async function* readEvents(redis, lastId = '0') {
+export async function* readEvents(
+    redis: RedisClientType,
+    lastId = '0'
+): AsyncGenerator<Record<string, string>> {
     let id = lastId;
     while (true) {
         const results = await redis.xRead({ key: STREAM_KEY, id }, { BLOCK: 1000, COUNT: 100 });
