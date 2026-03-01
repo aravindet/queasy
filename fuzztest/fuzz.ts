@@ -38,9 +38,10 @@ const LOG_FILE = join(__dirname, '..', 'fuzz-output.log');
 const logStream = createWriteStream(LOG_FILE, { flags: 'a' });
 
 function log(level: string, msg: string, data: Record<string, unknown> = {}): void {
-    const entry = JSON.stringify({ time: new Date().toISOString(), level, msg, data });
-    if (level === 'error') process.stdout.write(`VIOLATION: ${entry}\n`);
-    else process.stdout.write(`${entry}\n`);
+    let entry = `${process.uptime().toFixed(2)} ${level.toUpperCase().padEnd(5)}`;
+    const { type = '', queue = '', id = '', ...rest } = data;
+    entry = `${entry} ${msg.padEnd(10)} ${(type as string).padEnd(10)} ${(queue as string).padEnd(15)} ${(id as string).padEnd(15)} ${JSON.stringify(rest)}`;
+    process.stdout.write(`${entry}\n`);
     logStream.write(`${entry}\n`);
 }
 
@@ -90,7 +91,7 @@ interface IpcDequeueMsg {
 /**
  * Called when a child process dequeues a job (via IPC).
  */
-function onIpcDequeue(pid: number, msg: IpcDequeueMsg): void {
+function onIpcJobStart(pid: number, msg: IpcDequeueMsg): void {
     const { jobId: id, queue, runAt } = msg;
 
     // Mutual exclusion: job must not already be active
@@ -253,12 +254,6 @@ function printSummary(): void {
         lastStartPerQueue: Object.fromEntries(lastStartPerQueue),
     };
     log('info', 'Summary', summary);
-    console.log(`\n=== Fuzz Summary ===`);
-    console.log(`  Events processed : ${eventCount}`);
-    console.log(`  Violations found : ${violationCount}`);
-    console.log(`  Active jobs      : ${activeJobs.size}`);
-    console.log(`  Succeeded jobs   : ${succeededJobs.size}`);
-    console.log('===================\n');
 }
 
 // ── Child process management ───────────────────────────────────────────────────
@@ -271,7 +266,7 @@ function spawnProcess(): ChildProcess {
 
     child.on('message', (msg: { type: string; queue: string; jobId: string; runAt: number }) => {
         if (msg.type === 'dequeue') {
-            onIpcDequeue(child.pid!, msg);
+            onIpcJobStart(child.pid!, msg);
         } else if (msg.type === 'finish' || msg.type === 'retry' || msg.type === 'fail') {
             onIpcJobDone(msg.jobId);
         }
@@ -320,9 +315,7 @@ for (let i = 0; i < NUM_PERIODIC_JOBS; i++) {
 
 // ── Spawn child processes ──────────────────────────────────────────────────────
 
-for (let i = 0; i < NUM_PROCESSES; i++) {
-    spawnProcess();
-}
+for (let i = 0; i < NUM_PROCESSES; i++) spawnProcess();
 
 // Periodically kill a random process to simulate crashes
 const crashTimer = setInterval(killRandomProcess, CRASH_INTERVAL_MS);

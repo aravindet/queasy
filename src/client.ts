@@ -175,6 +175,7 @@ export class Client extends EventEmitter {
                 String(resetCounts),
             ],
         });
+        this.emit('dispatch', key, { id, runAt, data, updateData, updateRunAt, resetCounts });
     }
 
     async cancel(key: string, id: string): Promise<boolean> {
@@ -185,6 +186,7 @@ export class Client extends EventEmitter {
                 arguments: [id],
             }
         );
+        this.emit('cancel', key, id);
         return result === 1;
     }
 

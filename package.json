@@ -1,6 +1,6 @@
 {
     "name": "queasy",
-    "version": "0.3.0",
+    "version": "0.3.1",
     "description": "A simple Redis-backed queue library for Node.js",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
@@ -10,9 +10,9 @@
         "test": "node --test",
         "test:coverage": "node --test --experimental-test-coverage --test-coverage-lines=96 --test-coverage-include 'dist/**/*.js' 'test/**/*.test.js'",
         "test:watch": "node --test --watch",
+        "test:fuzz": "node fuzztest/fuzz.ts",
         "lint": "biome check .",
         "lint:fix": "biome check --write .",
-        "format": "biome format --write .",
         "typecheck": "tsc --noEmit -p tsconfig.json",
         "docker:up": "docker compose up -d",
         "docker:down": "docker compose down",

@@ -84,7 +84,7 @@ export async function handle(_data: any, job: Job): Promise<void> {
         type: 'finish',
         queue: '{fuzz}:cascade-a',
         id: job.id,
-        finishedAt: String(Date.now()),
+        finishedAt: process.uptime().toFixed(2),
         dispatched: ids.join(','),
     });
 }

@@ -67,8 +67,8 @@ export async function handle(data: any, job: Job): Promise<void> {
     }
 
     // Normal completion: dispatch a cascade-a job and re-queue self
-    const cascadeRunAt = Date.now() + Math.random() * 2000;
-    const selfDelay = 1000 + Math.random() * 4000;
+    const cascadeRunAt = 0;
+    const selfDelay = 500;
 
     const [cascadeId] = await Promise.all([
         cascadeAQueue.dispatch({ from: job.id }, { runAt: cascadeRunAt }),
